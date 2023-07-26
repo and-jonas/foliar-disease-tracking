@@ -1,3 +1,6 @@
+
+# This code is deprecated
+
 import glob
 import os
 from pathlib import Path

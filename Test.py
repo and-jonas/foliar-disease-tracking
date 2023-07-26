@@ -1,3 +1,8 @@
+
+
+# This code was slightly modified from https://pyimagesearch.com/2018/12/17/image-stitching-with-opencv-and-python/
+
+
 # import the necessary packages
 import numpy as np
 import imutils
@@ -15,7 +20,8 @@ class Stitcher:
 		self.isv3 = imutils.is_cv3(or_better=True)
 
 	def stitch(self, images, masks=[None, None], ratio=0.75, reprojThresh=4.0,
-		showMatches=False):
+			showMatches=False):
+
 		# unpack the images, then detect keypoints and extract
 		# local invariant descriptors from them
 		(imageA, imageB) = images
