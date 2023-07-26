@@ -65,10 +65,10 @@ label_series, image_series = list_by_sample(
 
 path_output = Path("Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output")
 
-l_series = label_series[9]
-i_series = image_series[9]
+l_series = label_series[0]
+i_series = image_series[0]
 
-for l_series, i_series in zip(label_series[3:4], image_series[3:4]):
+for l_series, i_series in zip(label_series[:15], image_series[:15]):
 
     if len(l_series) != len(i_series):
         print("series not of equal length!")
@@ -76,7 +76,11 @@ for l_series, i_series in zip(label_series[3:4], image_series[3:4]):
         print(i_series)
         break
 
-    for j in range(len(l_series)):
+    roi_widths = []
+    # for j in range(len(l_series)):
+    for j in range(10):
+
+        print(j)
 
         image_id = os.path.basename(l_series[j]).replace(".txt", "")
         sample_id = "_".join(os.path.basename(l_series[j]).split("_")[2:4]).replace(".txt", "")
@@ -109,6 +113,7 @@ for l_series, i_series in zip(label_series[3:4], image_series[3:4]):
         rect = cv2.minAreaRect(point_list)
 
         # TODO enlarge bounding box to capture additional lesions outside of the tagged range
+        # expand bounding box to the edge of the image
         (center, (w, h), angle) = rect
         # if w > h:
         #     w = w + 2000
@@ -132,10 +137,26 @@ for l_series, i_series in zip(label_series[3:4], image_series[3:4]):
         # order bounding box points clockwise
         pts = utils.order_points(pts)
 
+        # pts = utils.expand_bbox_to_image_edge(pts, img=img_rot)
+
         # crop the roi from the rotated image
         img_crop = img_rot[pts[0][1]:pts[2][1], pts[0][0]:pts[1][0]]
-        cv2.imwrite(f'{crops_path}/{image_id}.png', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB),
-                    [cv2.IMWRITE_PNG_COMPRESSION, 0])
+
+        # log the width of the roi to detect outliers in series
+        roi_widths.append(img_crop.shape[1])
+
+        if j == 0:
+            cv2.imwrite(f'{crops_path}/{image_id}.png', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB),
+                        [cv2.IMWRITE_PNG_COMPRESSION, 0])
+        else:
+            # log the width of the roi to detect outliers in series
+            outliers = utils.reject_size_outliers(roi_widths)
+            if not outliers:
+                # log the width of the roi to detect outliers in series
+                cv2.imwrite(f'{crops_path}/{image_id}.png', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB),
+                            [cv2.IMWRITE_PNG_COMPRESSION, 0])
+            else:
+                del roi_widths[-1]
 
         # copy for later use
         save_img = copy.copy(img_crop)
@@ -163,6 +184,9 @@ for l_series, i_series in zip(label_series[3:4], image_series[3:4]):
                         thickness=4,
                         fontScale=2,
                         color=(255, 0, 0))
+        if j != 0:
+            for i, point in enumerate(kpts_ref):
+                cv2.circle(img_crop, (point[0], point[1]), radius=7, color=(255, 0, 0), thickness=-1)
         cv2.imwrite(f'{overlay_path}/{image_id}.JPG', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB))
 
         # match all images in the series to the first image where possible
@@ -193,11 +217,14 @@ for l_series, i_series in zip(label_series[3:4], image_series[3:4]):
             src = [[*p[0]] for p in pair if p[1][0] is not np.nan]
             dst = [[*p[1]] for p in pair if p[1][0] is not np.nan]
 
-            # if there are few matches, there is likely a translation due to key point detection errors
+            # if there are few matches, or if there is a different size from the expected,
+            # there is likely a translation due to key point detection errors
             # try to fix by matching with the previous image in the series using SIFT features
-            if len(src) < 12:
-
-                print("key point mis-match. Matching on last image in series.")
+            if len(src) < 12 or outliers:
+                if len(src) < 12:
+                    print("Key point mis-match. Matching on last image in series.")
+                if outliers:
+                    print("Size outlier detected. Matching on last image in series.")
                 prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
                 previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
                 previous_image = np.asarray(previous_image)
@@ -265,3 +292,4 @@ for l_series, i_series in zip(label_series[3:4], image_series[3:4]):
             warped = skimage.transform.warp(save_img, tform)
             warped = skimage.util.img_as_ubyte(warped)
             cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
+            del outliers

@@ -87,6 +87,7 @@ class RoiAligner:
                 break
 
             # iterate over all samples in the series
+            roi_widths = []
             for j in range(len(l_series)):
 
                 image_id = os.path.basename(l_series[j]).replace(".txt", "")
@@ -98,7 +99,7 @@ class RoiAligner:
                 overlay2_path = sample_output_path / "overlay2"
                 crops_path = sample_output_path / "crops"
                 result_path = sample_output_path / "result"
-                for p in (overlay_path, crops_path, result_path):
+                for p in (overlay_path, overlay2_path, crops_path, result_path):
                     p.mkdir(parents=True, exist_ok=True)
 
                 # get key point coordinates from YOLO output
@@ -119,7 +120,8 @@ class RoiAligner:
                 point_list = np.delete(point_list, outliers, 0)
                 rect = cv2.minAreaRect(point_list)
 
-                # TODO enlarge bbox
+                # TODO enlarge bounding box to capture additional lesions outside of the tagged range
+                # expand bounding box to the edge of the image
                 (center, (w, h), angle) = rect
                 # if w > h:
                 #     w = w + 2000
@@ -143,10 +145,27 @@ class RoiAligner:
                 # order bounding box points clockwise
                 pts = utils.order_points(pts)
 
+                # pts = utils.expand_bbox_to_image_edge(pts, img=img_rot)
+
                 # crop the roi from the rotated image
                 img_crop = img_rot[pts[0][1]:pts[2][1], pts[0][0]:pts[1][0]]
-                cv2.imwrite(f'{crops_path}/{image_id}.png', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB),
-                            [cv2.IMWRITE_PNG_COMPRESSION, 0])
+
+                # log the width of the roi to detect outliers in series
+                roi_widths.append(img_crop.shape[1])
+
+                if j == 0:
+                    cv2.imwrite(f'{crops_path}/{image_id}.png', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB),
+                                [cv2.IMWRITE_PNG_COMPRESSION, 0])
+                else:
+                    # log the width of the roi to detect outliers in series
+                    outliers = utils.reject_size_outliers(roi_widths, m=2)
+                    if not outliers:
+                        # log the width of the roi to detect outliers in series
+                        cv2.imwrite(f'{crops_path}/{image_id}.png', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB),
+                                    [cv2.IMWRITE_PNG_COMPRESSION, 0])
+                    else:
+                        del roi_widths[-1]
+                        print("Size outlier detected.")
 
                 # copy for later use
                 save_img = copy.copy(img_crop)
@@ -174,6 +193,9 @@ class RoiAligner:
                                 thickness=4,
                                 fontScale=2,
                                 color=(255, 0, 0))
+                if j != 0:
+                    for i, point in enumerate(kpts_ref):
+                        cv2.circle(img_crop, (point[0], point[1]), radius=7, color=(255, 0, 0), thickness=-1)
                 cv2.imwrite(f'{overlay_path}/{image_id}.JPG', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB))
 
                 # match all images in the series to the first image where possible
@@ -204,11 +226,14 @@ class RoiAligner:
                     src = [[*p[0]] for p in pair if p[1][0] is not np.nan]
                     dst = [[*p[1]] for p in pair if p[1][0] is not np.nan]
 
-                    # if there are few matches, there is likely a translation due to key point detection errors
+                    # if there are few matches, or if there is a different size from the expected,
+                    # there is likely a translation due to key point detection errors
                     # try to fix by matching with the previous image in the series using SIFT features
-                    if len(src) < 12:
-
-                        print("key point mis-match. Matching on last image in series.")
+                    if len(src) < 12 or outliers:
+                        if len(src) < 12:
+                            print("Key point mis-match. Matching on last image in series.")
+                        if outliers:
+                            print("Size outlier detected. Matching on last image in series.")
                         prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
                         previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
                         previous_image = np.asarray(previous_image)
@@ -276,7 +301,6 @@ class RoiAligner:
                     warped = skimage.transform.warp(save_img, tform)
                     warped = skimage.util.img_as_ubyte(warped)
                     cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
-
     def process_all(self):
 
         self.prepare_workspace()

@@ -23,6 +23,23 @@ def reject_outliers(data, m=2.):
     return idx
 
 
+def reject_size_outliers(data, max_diff=75):
+    """
+    Detects outliers in 1d and returns the list index of the outliers
+    :param d: size difference threshold in px
+    :param data: 1d array
+    :param m:
+    :return: list index of outliers
+    """
+    mean_size_prev = np.mean(data[:-1])
+    current_size = data[-1]
+    if current_size-mean_size_prev > max_diff:
+        idx = [len(data)-1]
+    else:
+        idx = []
+    return idx
+
+
 def warp_point(x: int, y: int, M) -> [int, int]:
     """
     Applies a homography matrix to a point
@@ -64,6 +81,22 @@ def order_points(pts):
     D = dist.cdist(tl[np.newaxis], rightMost, "euclidean")[0]
     (br, tr) = rightMost[np.argsort(D)[::-1], :]
     return np.array([tl, tr, br, bl], dtype="int")
+
+
+def expand_bbox_to_image_edge(pts, img):
+    """
+    takes for coordinate pairs of the rotated bounding box
+    and expands it to the edge of the image
+    :param pts: four coordinate pairs representing tl, tr, bl, br as an an array
+    :param img: the rotated image
+    :return: the corner coordinates of the expanded bounding box
+    """
+    [tl, tr, bl, br] = pts
+    tl = [0, tl[1]]
+    tr = [img.shape[1], tr[1]]
+    bl = [0, bl[1]]
+    br = [img.shape[1], br[1]]
+    return np.asarray([tl, tr, bl, br])
 
 
 def make_point_list(input):
