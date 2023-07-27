@@ -6,6 +6,7 @@
 # import libraries
 from Test import Stitcher
 import numpy as np
+import json
 import pandas as pd
 import cv2
 from PIL import Image
@@ -94,13 +95,12 @@ class RoiAligner:
 
                 print(str(sample_id) + ": image " + str(j))
 
-                # create output paths for each sample
+                # generate output paths for each sample and create directories
                 sample_output_path = self.path_output / sample_id
                 overlay_path = sample_output_path / "overlay"
-                overlay2_path = sample_output_path / "overlay2"
-                crops_path = sample_output_path / "crops"
+                roi_path = sample_output_path / "roi"
                 result_path = sample_output_path / "result"
-                for p in (overlay_path, overlay2_path, crops_path, result_path):
+                for p in (overlay_path, roi_path, result_path):
                     p.mkdir(parents=True, exist_ok=True)
 
                 # get key point coordinates from YOLO output
@@ -122,13 +122,7 @@ class RoiAligner:
                 rect = cv2.minAreaRect(point_list)
 
                 # TODO enlarge bounding box to capture additional lesions outside of the tagged range
-                # expand bounding box to the edge of the image
                 (center, (w, h), angle) = rect
-                # if w > h:
-                #     w = w + 2000
-                # else:
-                #     h = h + 2000
-                # rect = (center, (w, h), angle)
                 if angle > 45:
                     angle = angle - 90
 
@@ -137,7 +131,7 @@ class RoiAligner:
                 M_img = cv2.getRotationMatrix2D((cols / 2, rows / 2), angle, 1)
                 img_rot = cv2.warpAffine(img, M_img, (cols, rows))
 
-                # rotate the bounding box about its center
+                # rotate the bounding box the image's center
                 M_box = cv2.getRotationMatrix2D((cols / 2, rows / 2), angle, 1)
                 box = cv2.boxPoints(rect)
                 pts = np.intp(cv2.transform(np.array([box]), M_box))[0]
@@ -146,6 +140,18 @@ class RoiAligner:
                 # order bounding box points clockwise
                 pts = utils.order_points(pts)
 
+                # record roi localization
+                roi_loc = {'rotation_matrix': M_img.tolist(), 'bounding_box': pts.tolist()}
+
+                # draw key points and bounding box on overlay image as check
+                overlay = copy.copy(img)
+                for point in point_list:
+                    cv2.circle(overlay, (point[0], point[1]), radius=15, color=(0, 0, 255), thickness=9)
+                box_ = np.intp(box)
+                cv2.drawContours(overlay, [box_], 0, (255, 0, 0), 9)
+                overlay = cv2.resize(overlay, (0, 0), fx=0.25, fy=0.25)
+                cv2.imwrite(f'{overlay_path}/{image_id}.JPG', cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
+
                 # pts = utils.expand_bbox_to_image_edge(pts, img=img_rot)
 
                 # crop the roi from the rotated image
@@ -153,18 +159,13 @@ class RoiAligner:
 
                 # log the width of the roi to detect outliers in series
                 roi_widths.append(img_crop.shape[1])
-
                 if j == 0:
-                    cv2.imwrite(f'{crops_path}/{image_id}.png', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB),
-                                [cv2.IMWRITE_PNG_COMPRESSION, 0])
-                else:
-                    # log the width of the roi to detect outliers in series
+                    init_roi_height = img_crop.shape[0]
+
+                # detect size outliers and remove from the logged bbox width values
+                if j != 0:
                     size_outliers = utils.reject_size_outliers(roi_widths, max_diff=100)
-                    if not size_outliers:
-                        # log the width of the roi to detect outliers in series
-                        cv2.imwrite(f'{crops_path}/{image_id}.png', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB),
-                                    [cv2.IMWRITE_PNG_COMPRESSION, 0])
-                    else:
+                    if size_outliers:
                         del roi_widths[-1]
 
                 # copy for later use
@@ -182,21 +183,6 @@ class RoiAligner:
 
                 # apply  translation to key points
                 kpts = np.intp(cv2.transform(np.array([kpts]), translation_matrix))[0]
-
-                # draw key points on overlay image as check
-                for i, point in enumerate(kpts):
-                    cv2.circle(img_crop, (point[0], point[1]), radius=7, color=(0, 0, 255), thickness=-1)
-                    cv2.putText(img_crop,
-                                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                                org=point,
-                                text=str(i),
-                                thickness=4,
-                                fontScale=2,
-                                color=(255, 0, 0))
-                if j != 0:
-                    for i, point in enumerate(kpts_ref):
-                        cv2.circle(img_crop, (point[0], point[1]), radius=7, color=(255, 0, 0), thickness=-1)
-                cv2.imwrite(f'{overlay_path}/{image_id}.JPG', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB))
 
                 # match all images in the series to the first image where possible
                 if j == 0:
@@ -229,74 +215,26 @@ class RoiAligner:
                         elif w1 > w2:
                             current_image = cv2.copyMakeBorder(current_image, 0, w1 - w2, 0, 0, cv2.BORDER_CONSTANT)
 
-                        scale_factor = 1
-                        width = int(img_crop.shape[1] * scale_factor)
-                        height = int(img_crop.shape[0] * scale_factor)
-                        dim = (width, height)
-                        prev = cv2.resize(previous_image, dim, interpolation=cv2.INTER_LINEAR)
-                        curr = cv2.resize(current_image, dim, interpolation=cv2.INTER_LINEAR)
-
+                        # try stitching images using SIFT and RANSAC
                         stitcher = Stitcher()
                         try:
-                            (result, vis, H) = stitcher.stitch(images=[copy.copy(prev), copy.copy(curr)],
-                                                               masks=[None, None],
-                                                               showMatches=True)
+                            (result, vis, H) = stitcher.stitch(
+                                images=[copy.copy(previous_image), copy.copy(current_image)],
+                                masks=[None, None],
+                                showMatches=True)
                         except TypeError:
-                            "could not match images"
+                            print("could not match images")
                             continue
-                        #
-                        # t, th, sc, sh = utils.getComponents(H)
-                        # T = np.array([
-                        #     [1, 0, -t[0]],
-                        #     [0, 1, 0]
-                        # ], dtype=np.float32)
-                        #
-                        # warped = cv2.warpAffine(current_image, T, (previous_image.shape[1], previous_image.shape[0]))
-                        #
-                        # fig, axs = plt.subplots(1, 2, sharex=True, sharey=True)
-                        # axs[0].imshow(previous_image)
-                        # axs[0].set_title('original')
-                        # axs[1].imshow(warped)
-                        # axs[1].set_title('transformed')
-                        # plt.show(block=True)
-
-                        # dim_small = np.float32([[0, 0], [prev.shape[0], 0], [prev.shape[0], prev.shape[1]], [0, prev.shape[1]]])
-                        # dim_large = np.float32([[0, 0], [previous_image.shape[0], 0], [previous_image.shape[0], previous_image.shape[1]], [0, previous_image.shape[1]]])
-                        # H_scale = cv2.getPerspectiveTransform(src=dim_small,
-                        #                                       dst=dim_large)
-                        # H_tot = np.dot(np.linalg.inv(H), np.linalg.inv(H_scale))
-                        # warped = cv2.warpPerspective(current_image, H_tot,
-                        #                              (previous_image.shape[1], previous_image.shape[0]))
-                        # warped = skimage.util.img_as_ubyte(warped)
-                        # plt.imshow(warped)
 
                         # warp image by applying the inverse of the homography matrix
                         warped = cv2.warpPerspective(current_image, np.linalg.inv(H),
                                                      (previous_image.shape[1], previous_image.shape[0]))
                         warped = skimage.util.img_as_ubyte(warped)
-                        # cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
 
                         # warp key points by applying the inverse of the homography matrix
                         kpts_warped = [utils.warp_point(x[0], x[1], np.linalg.inv(H)) for x in kpts]
-                        # kpts_warped = np.intp(cv2.transform(np.array([kpts]), T))[0]
 
-                        # draw overlay
-                        for i, point in enumerate(kpts_warped):
-                            cv2.circle(warped, (point[0], point[1]), radius=7, color=(0, 0, 255), thickness=-1)
-                            cv2.putText(warped,
-                                        fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                                        org=point,
-                                        text=str(i),
-                                        thickness=4,
-                                        fontScale=2,
-                                        color=(255, 0, 0))
-                        for i, point in enumerate(kpts):
-                            cv2.circle(warped, (point[0], point[1]), radius=7, color=(0, 255, 0), thickness=-1)
-                        cv2.imwrite(f'{overlay2_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
-
-                        # match key points with those on the first image of the series
-                        # by searching for the closest points
-                        # if non is found in proximity, eliminate from both images
+                        # try again to match key points with those on the first image of the series
                         src, dst = utils.find_keypoint_matches(kpts_warped, kpts, kpts_ref)
 
                     # perspective Transform with the first image of the series as destination
@@ -304,10 +242,17 @@ class RoiAligner:
                     # tform = skimage.transform.PolynomialTransform()
                     # tform = skimage.transform.PiecewiseAffineTransform()
                     tform.estimate(src, dst)
-                    warped = skimage.transform.warp(save_img, tform)
+                    warped = skimage.transform.warp(save_img, tform, output_shape=(init_roi_height, roi_widths[0]))
                     warped = skimage.util.img_as_ubyte(warped)
                     cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
+
                     del size_outliers
+
+                    # add transformation matrix to the roi localization info
+                    roi_loc['transformation_matrix'] = tform.params.tolist()
+
+                with open(f'{roi_path}/{image_id}.json', 'w') as outfile:
+                    json.dump(roi_loc, outfile)
 
     def process_all(self):
 
