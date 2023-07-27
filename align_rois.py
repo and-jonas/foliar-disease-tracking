@@ -1,8 +1,8 @@
 
 from RoiAligner import RoiAligner
 
-# workdir = 'Z:/Public/Jonas/Data/ESWW007/SingleLeaf/'
-workdir = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf"
+workdir = 'Z:/Public/Jonas/Data/ESWW007/SingleLeaf'
+# workdir = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf"
 
 
 def run():

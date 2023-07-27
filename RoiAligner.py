@@ -18,7 +18,6 @@ import os
 from pathlib import Path
 import copy
 import skimage
-import multiprocessing
 from multiprocessing import Manager, Process
 import warnings
 matplotlib.use('Qt5Agg')
@@ -115,8 +114,8 @@ class RoiAligner:
                 # remove outliers in the key point detections from YOLO errors,
                 # get minimum area rectangle around retained key points
                 point_list = np.array([[a, b] for a, b in zip(x, y)], dtype=np.int32)
-                outliers_x = utils.reject_outliers(x)
-                outliers_y = utils.reject_outliers(y)
+                outliers_x = utils.reject_outliers(x, m=3.)  # larger extension, larger variation
+                outliers_y = utils.reject_outliers(y, m=2.)  # smaller extension, smaller variation
                 outliers = outliers_x + outliers_y
                 point_list = np.delete(point_list, outliers, 0)
                 rect = cv2.minAreaRect(point_list)

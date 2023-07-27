@@ -3,6 +3,7 @@
 # Script to align the ROIs from images in a series
 # ======================================================================================================================
 
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import json
@@ -13,7 +14,6 @@ import matplotlib.pyplot as plt
 import utils
 import glob
 import os
-from pathlib import Path
 import copy
 import skimage
 from Test import Stitcher
@@ -104,8 +104,8 @@ for l_series, i_series in zip(label_series[7:15], image_series[7:15]):
         # remove outliers in the key point detections from YOLO errors,
         # get minimum area rectangle around retained key points
         point_list = np.array([[a, b] for a, b in zip(x, y)], dtype=np.int32)
-        outliers_x = utils.reject_outliers(x)
-        outliers_y = utils.reject_outliers(y)
+        outliers_x = utils.reject_outliers(x, m=3.)  # larger extension, larger variation
+        outliers_y = utils.reject_outliers(y, m=2.)  # smaller extension, smaller variation
         outliers = outliers_x + outliers_y
         point_list = np.delete(point_list, outliers, 0)
         rect = cv2.minAreaRect(point_list)
