@@ -16,7 +16,6 @@ import glob
 import os
 from pathlib import Path
 import copy
-import scipy.spatial
 import skimage
 import multiprocessing
 from multiprocessing import Manager, Process
@@ -93,6 +92,8 @@ class RoiAligner:
                 image_id = os.path.basename(l_series[j]).replace(".txt", "")
                 sample_id = "_".join(os.path.basename(l_series[j]).split("_")[2:4]).replace(".txt", "")
 
+                print(str(sample_id) + ": image " + str(j))
+
                 # create output paths for each sample
                 sample_output_path = self.path_output / sample_id
                 overlay_path = sample_output_path / "overlay"
@@ -158,14 +159,13 @@ class RoiAligner:
                                 [cv2.IMWRITE_PNG_COMPRESSION, 0])
                 else:
                     # log the width of the roi to detect outliers in series
-                    outliers = utils.reject_size_outliers(roi_widths, m=2)
-                    if not outliers:
+                    size_outliers = utils.reject_size_outliers(roi_widths, max_diff=100)
+                    if not size_outliers:
                         # log the width of the roi to detect outliers in series
                         cv2.imwrite(f'{crops_path}/{image_id}.png', cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB),
                                     [cv2.IMWRITE_PNG_COMPRESSION, 0])
                     else:
                         del roi_widths[-1]
-                        print("Size outlier detected.")
 
                 # copy for later use
                 save_img = copy.copy(img_crop)
@@ -206,101 +206,109 @@ class RoiAligner:
                     # match key points with those on the first image of the series
                     # by searching for the closest points
                     # if non is found in proximity, eliminate from both images
-                    tree = scipy.spatial.KDTree(kpts)
-                    assoc = []
-                    for I1, point in enumerate(kpts_ref):
-                        _, I2 = tree.query(point, k=1, distance_upper_bound=100)
-                        assoc.append((I1, I2))
-                    # match indices back to key point coordinates
-                    assocs = []
-                    for a in assoc:
-                        p1 = kpts_ref[a[0]].tolist()
-                        try:
-                            p2 = kpts[a[1]].tolist()
-                        except IndexError:
-                            p2 = [np.NAN, np.NAN]
-                        assocs.append([p1, p2])
-
-                    # reshape to list of corresponding source and target key point coordinates
-                    pair = assocs
-                    src = [[*p[0]] for p in pair if p[1][0] is not np.nan]
-                    dst = [[*p[1]] for p in pair if p[1][0] is not np.nan]
+                    src, dst = utils.find_keypoint_matches(kpts, kpts, kpts_ref)
 
                     # if there are few matches, or if there is a different size from the expected,
                     # there is likely a translation due to key point detection errors
                     # try to fix by matching with the previous image in the series using SIFT features
-                    if len(src) < 12 or outliers:
+                    if len(src) < 12 or size_outliers:
                         if len(src) < 12:
                             print("Key point mis-match. Matching on last image in series.")
-                        if outliers:
+                        if size_outliers:
                             print("Size outlier detected. Matching on last image in series.")
                         prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
                         previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
                         previous_image = np.asarray(previous_image)
                         current_image = save_img
 
-                        # adjust size if needed by padding; images must have equal height for stitching
+                        # adjust size by padding if needed; images must have equal height for stitching
                         (w1, h1, _) = previous_image.shape
                         (w2, h2, _) = current_image.shape
                         if w2 > w1:
                             previous_image = cv2.copyMakeBorder(previous_image, 0, w2 - w1, 0, 0, cv2.BORDER_CONSTANT)
+                        elif w1 > w2:
+                            current_image = cv2.copyMakeBorder(current_image, 0, w1 - w2, 0, 0, cv2.BORDER_CONSTANT)
+
+                        scale_factor = 1
+                        width = int(img_crop.shape[1] * scale_factor)
+                        height = int(img_crop.shape[0] * scale_factor)
+                        dim = (width, height)
+                        prev = cv2.resize(previous_image, dim, interpolation=cv2.INTER_LINEAR)
+                        curr = cv2.resize(current_image, dim, interpolation=cv2.INTER_LINEAR)
 
                         stitcher = Stitcher()
-                        (result, vis, H) = stitcher.stitch(images=[copy.copy(previous_image), copy.copy(current_image)],
-                                                           masks=[None, None],
-                                                           showMatches=True)
+                        try:
+                            (result, vis, H) = stitcher.stitch(images=[copy.copy(prev), copy.copy(curr)],
+                                                               masks=[None, None],
+                                                               showMatches=True)
+                        except TypeError:
+                            "could not match images"
+                            continue
+                        #
+                        # t, th, sc, sh = utils.getComponents(H)
+                        # T = np.array([
+                        #     [1, 0, -t[0]],
+                        #     [0, 1, 0]
+                        # ], dtype=np.float32)
+                        #
+                        # warped = cv2.warpAffine(current_image, T, (previous_image.shape[1], previous_image.shape[0]))
+                        #
+                        # fig, axs = plt.subplots(1, 2, sharex=True, sharey=True)
+                        # axs[0].imshow(previous_image)
+                        # axs[0].set_title('original')
+                        # axs[1].imshow(warped)
+                        # axs[1].set_title('transformed')
+                        # plt.show(block=True)
+
+                        # dim_small = np.float32([[0, 0], [prev.shape[0], 0], [prev.shape[0], prev.shape[1]], [0, prev.shape[1]]])
+                        # dim_large = np.float32([[0, 0], [previous_image.shape[0], 0], [previous_image.shape[0], previous_image.shape[1]], [0, previous_image.shape[1]]])
+                        # H_scale = cv2.getPerspectiveTransform(src=dim_small,
+                        #                                       dst=dim_large)
+                        # H_tot = np.dot(np.linalg.inv(H), np.linalg.inv(H_scale))
+                        # warped = cv2.warpPerspective(current_image, H_tot,
+                        #                              (previous_image.shape[1], previous_image.shape[0]))
+                        # warped = skimage.util.img_as_ubyte(warped)
+                        # plt.imshow(warped)
 
                         # warp image by applying the inverse of the homography matrix
                         warped = cv2.warpPerspective(current_image, np.linalg.inv(H),
                                                      (previous_image.shape[1], previous_image.shape[0]))
                         warped = skimage.util.img_as_ubyte(warped)
-                        cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
+                        # cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
 
                         # warp key points by applying the inverse of the homography matrix
                         kpts_warped = [utils.warp_point(x[0], x[1], np.linalg.inv(H)) for x in kpts]
+                        # kpts_warped = np.intp(cv2.transform(np.array([kpts]), T))[0]
 
                         # draw overlay
                         for i, point in enumerate(kpts_warped):
                             cv2.circle(warped, (point[0], point[1]), radius=7, color=(0, 0, 255), thickness=-1)
-                            cv2.putText(img_crop,
+                            cv2.putText(warped,
                                         fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                                         org=point,
                                         text=str(i),
                                         thickness=4,
                                         fontScale=2,
                                         color=(255, 0, 0))
+                        for i, point in enumerate(kpts):
+                            cv2.circle(warped, (point[0], point[1]), radius=7, color=(0, 255, 0), thickness=-1)
                         cv2.imwrite(f'{overlay2_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
-                        continue
+
                         # match key points with those on the first image of the series
                         # by searching for the closest points
                         # if non is found in proximity, eliminate from both images
-                        # tree = scipy.spatial.KDTree(k)
-                        # assoc = []
-                        # for I1, point in enumerate(kpts_ref):
-                        #     _, I2 = tree.query(point, k=1, distance_upper_bound=300)
-                        #     assoc.append((I1, I2))
-                        # # match indices back to key point coordinates
-                        # assocs = []
-                        # for a in assoc:
-                        #     p1 = kpts_ref[a[0]].tolist()
-                        #     try:
-                        #         p2 = kpts[a[1]].tolist()
-                        #     except IndexError:
-                        #         p2 = [np.NAN, np.NAN]
-                        #     assocs.append([p1, p2])
-                        #
-                        # # reshape to list of corresponding source and target key point coordinates
-                        # pair = assocs
-                        # src = [[*p[0]] for p in pair if p[1][0] is not np.nan]
-                        # dst = [[*p[1]] for p in pair if p[1][0] is not np.nan]
+                        src, dst = utils.find_keypoint_matches(kpts_warped, kpts, kpts_ref)
 
                     # perspective Transform with the first image of the series as destination
                     tform = skimage.transform.ProjectiveTransform()
+                    # tform = skimage.transform.PolynomialTransform()
                     # tform = skimage.transform.PiecewiseAffineTransform()
                     tform.estimate(src, dst)
                     warped = skimage.transform.warp(save_img, tform)
                     warped = skimage.util.img_as_ubyte(warped)
                     cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
+                    del size_outliers
+
     def process_all(self):
 
         self.prepare_workspace()

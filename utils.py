@@ -6,6 +6,7 @@
 import numpy as np
 import cv2
 import math
+from scipy.spatial import KDTree
 from scipy.spatial import distance as dist
 
 
@@ -23,7 +24,7 @@ def reject_outliers(data, m=2.):
     return idx
 
 
-def reject_size_outliers(data, max_diff=75):
+def reject_size_outliers(data, max_diff):
     """
     Detects outliers in 1d and returns the list index of the outliers
     :param d: size difference threshold in px
@@ -33,7 +34,7 @@ def reject_size_outliers(data, max_diff=75):
     """
     mean_size_prev = np.mean(data[:-1])
     current_size = data[-1]
-    if current_size-mean_size_prev > max_diff:
+    if np.abs(current_size-mean_size_prev) > max_diff:
         idx = [len(data)-1]
     else:
         idx = []
@@ -54,6 +55,51 @@ def warp_point(x: int, y: int, M) -> [int, int]:
         int((M[0, 0] * x + M[0, 1] * y + M[0, 2]) / d),  # x
         int((M[1, 0] * x + M[1, 1] * y + M[1, 2]) / d),  # y
     ])
+
+
+def find_keypoint_matches(current, current_orig, ref):
+    tree = KDTree(current)
+    assoc = []
+    for I1, point in enumerate(ref):
+        _, I2 = tree.query(point, k=1, distance_upper_bound=150)
+        assoc.append((I1, I2))
+    # match indices back to key point coordinates
+    assocs = []
+    for a in assoc:
+        p1 = ref[a[0]].tolist()
+        try:
+            p2 = current_orig[a[1]].tolist()
+        except IndexError:
+            p2 = [np.NAN, np.NAN]
+        assocs.append([p1, p2])
+
+    # reshape to list of corresponding source and target key point coordinates
+    pair = assocs
+    src = [[*p[0]] for p in pair if p[1][0] is not np.nan]
+    dst = [[*p[1]] for p in pair if p[1][0] is not np.nan]
+
+    return src, dst
+
+
+def getComponents(normalised_homography):
+  '''((translationx, translationy), rotation, (scalex, scaley), shear)'''
+  a = normalised_homography[0,0]
+  b = normalised_homography[0,1]
+  c = normalised_homography[0,2]
+  d = normalised_homography[1,0]
+  e = normalised_homography[1,1]
+  f = normalised_homography[1,2]
+
+  p = math.sqrt(a*a + b*b)
+  r = (a*e - b*d)/(p)
+  q = (a*d+b*e)/(a*e - b*d)
+
+  translation = (c,f)
+  scale = (p,r)
+  shear = q
+  theta = math.atan2(b,a)
+
+  return translation, theta, scale, shear
 
 
 def order_points(pts):
