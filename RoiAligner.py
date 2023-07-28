@@ -36,6 +36,14 @@ class RoiAligner:
         Creates all required output directories
         """
         self.path_output.mkdir(parents=True, exist_ok=True)
+        with open(f"{self.path_output}/unmatched.txt", 'w') as file:
+            pass
+
+    def log_fail(self, image_id):
+        print("could not derive transformation matrix")
+        f = open(f"{self.path_output}/unmatched.txt", 'a')
+        f.write(image_id)
+        f.close()
 
     def get_series(self):
         """
@@ -59,7 +67,7 @@ class RoiAligner:
 
         print("found " + str(len(uniques)) + " unique sample names")
 
-        for unique_sample in uniques[:48]:
+        for unique_sample in uniques[15:48]:
             image_idx = [index for index, image_id in enumerate(image_image_id) if unique_sample == image_id]
             label_idx = [index for index, label_id in enumerate(label_image_id) if unique_sample == label_id]
             sample_image_names = [images[i] for i in image_idx]
@@ -222,7 +230,7 @@ class RoiAligner:
                                 masks=[None, None],
                                 showMatches=True)
                         except TypeError:
-                            print("could not match images")
+                            self.log_fail(image_id)
                             continue
 
                         # warp image by applying the inverse of the homography matrix
@@ -240,10 +248,16 @@ class RoiAligner:
                     tform = skimage.transform.ProjectiveTransform()
                     # tform = skimage.transform.PolynomialTransform()
                     # tform = skimage.transform.PiecewiseAffineTransform()
-                    tform.estimate(src, dst)
+                    try:
+                        tform.estimate(src, dst)
+                    except ValueError:
+                        self.log_fail(image_id)
+                        continue
                     warped = skimage.transform.warp(save_img, tform, output_shape=(init_roi_height, roi_widths[0]))
                     warped = skimage.util.img_as_ubyte(warped)
                     cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
+                    # if os.path.getsize(f'{result_path}/{image_id}.JPG') < 600:
+                    #     self.log_fail(image_id)
 
                     del size_outliers
 

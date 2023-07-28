@@ -65,8 +65,11 @@ label_series, image_series = list_by_sample(
 
 path_output = Path("Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output")
 
-l_series = label_series[1]
-i_series = image_series[1]
+l_series = label_series[26]
+i_series = image_series[26]
+
+with open(f"{path_output}/unmatched.txt", 'w') as file:
+    pass
 
 for l_series, i_series in zip(label_series[7:15], image_series[7:15]):
 
@@ -78,6 +81,7 @@ for l_series, i_series in zip(label_series[7:15], image_series[7:15]):
 
     roi_widths = []
     for j in range(len(l_series)):
+    # for j in range(8):
 
         image_id = os.path.basename(l_series[j]).replace(".txt", "")
         sample_id = "_".join(os.path.basename(l_series[j]).split("_")[2:4]).replace(".txt", "")
@@ -191,8 +195,14 @@ for l_series, i_series in zip(label_series[7:15], image_series[7:15]):
                     print("Key point mis-match. Matching on last image in series.")
                 if size_outliers:
                     print("Size outlier detected. Matching on last image in series.")
-                prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
-                previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
+                try:
+                    prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
+                    previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
+                except FileNotFoundError:
+                    prev_image_id = os.path.basename(l_series[j - 2]).replace(".txt", "")
+                    previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
+                except FileNotFoundError:
+                    continue
                 previous_image = np.asarray(previous_image)
                 current_image = save_img
 
@@ -212,6 +222,9 @@ for l_series, i_series in zip(label_series[7:15], image_series[7:15]):
                                                        showMatches=True)
                 except TypeError:
                     print("could not match images")
+                    f = open(f"{path_output}/unmatched.txt", 'a')
+                    f.writelines(image_id + "\n")
+                    f.close()
                     continue
 
                 # warp image by applying the inverse of the homography matrix
@@ -229,10 +242,23 @@ for l_series, i_series in zip(label_series[7:15], image_series[7:15]):
             tform = skimage.transform.ProjectiveTransform()
             # tform = skimage.transform.PolynomialTransform()
             # tform = skimage.transform.PiecewiseAffineTransform()
-            tform.estimate(src, dst)
+            try:
+                tform.estimate(src, dst)
+            except ValueError:
+                print("could not derive transformation matrix")
+                f = open(f"{path_output}/unmatched.txt", 'a')
+                f.write(image_id)
+                f.close()
+                continue
+
             warped = skimage.transform.warp(save_img, tform, output_shape=(init_roi_height, roi_widths[0]))
             warped = skimage.util.img_as_ubyte(warped)
             cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
+            # if os.path.getsize(f'{result_path}/{image_id}.JPG') < 700:
+            #     print("could not derive transformation matrix")
+            #     f = open(f"{path_output}/unmatched.txt", 'a')
+            #     f.write(image_id)
+            #     f.close()
 
             del size_outliers
 

@@ -37,3 +37,7 @@ roi = img_rot[box_[0][1]:box_[2][1], box_[0][0]:box_[1][0]]
 warped = skimage.transform.warp(roi, tform, output_shape=(629, 5129))
 warped = skimage.util.img_as_ubyte(warped)
 # OK!!
+
+# ======================================================================================================================
+
+# check the output
