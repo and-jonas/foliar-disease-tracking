@@ -65,13 +65,13 @@ label_series, image_series = list_by_sample(
 
 path_output = Path("Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output")
 
-l_series = label_series[26]
-i_series = image_series[26]
+l_series = label_series[2]
+i_series = image_series[2]
 
 with open(f"{path_output}/unmatched.txt", 'w') as file:
     pass
 
-for l_series, i_series in zip(label_series[7:15], image_series[7:15]):
+for l_series, i_series in zip(label_series, image_series):
 
     if len(l_series) != len(i_series):
         print("series not of equal length!")

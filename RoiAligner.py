@@ -40,9 +40,8 @@ class RoiAligner:
             pass
 
     def log_fail(self, image_id):
-        print("could not derive transformation matrix")
         f = open(f"{self.path_output}/unmatched.txt", 'a')
-        f.write(image_id)
+        f.writelines(image_id + "\n")
         f.close()
 
     def get_series(self):
@@ -67,11 +66,14 @@ class RoiAligner:
 
         print("found " + str(len(uniques)) + " unique sample names")
 
-        for unique_sample in uniques[15:48]:
+        for unique_sample in uniques:
             image_idx = [index for index, image_id in enumerate(image_image_id) if unique_sample == image_id]
             label_idx = [index for index, label_id in enumerate(label_image_id) if unique_sample == label_id]
             sample_image_names = [images[i] for i in image_idx]
             sample_labels = [labels[i] for i in label_idx]
+            # sort to ensure sequential processing of subsequent images
+            sample_image_names = sorted(sample_image_names, key=lambda i: os.path.splitext(os.path.basename(i))[0])
+            sample_labels = sorted(sample_labels, key=lambda i: os.path.splitext(os.path.basename(i))[0])
             label_series.append(sample_labels)
             image_series.append(sample_image_names)
 
@@ -107,7 +109,8 @@ class RoiAligner:
                 overlay_path = sample_output_path / "overlay"
                 roi_path = sample_output_path / "roi"
                 result_path = sample_output_path / "result"
-                for p in (overlay_path, roi_path, result_path):
+                preview_path = sample_output_path / "preview"
+                for p in (overlay_path, roi_path, result_path, preview_path):
                     p.mkdir(parents=True, exist_ok=True)
 
                 # get key point coordinates from YOLO output
@@ -164,6 +167,9 @@ class RoiAligner:
                 # crop the roi from the rotated image
                 img_crop = img_rot[pts[0][1]:pts[2][1], pts[0][0]:pts[1][0]]
 
+                thumbnail = cv2.resize(img_crop, (0, 0), fx=0.2, fy=0.2)
+                cv2.imwrite(f'{preview_path}/{image_id}.JPG', cv2.cvtColor(thumbnail, cv2.COLOR_BGR2RGB))
+
                 # log the width of the roi to detect outliers in series
                 roi_widths.append(img_crop.shape[1])
                 if j == 0:
@@ -205,12 +211,18 @@ class RoiAligner:
                     # there is likely a translation due to key point detection errors
                     # try to fix by matching with the previous image in the series using SIFT features
                     if len(src) < 12 or size_outliers:
-                        if len(src) < 12:
-                            print("Key point mis-match. Matching on last image in series.")
-                        if size_outliers:
-                            print("Size outlier detected. Matching on last image in series.")
-                        prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
-                        previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
+                        # if len(src) < 12:
+                        #     print("Key point mis-match. Matching on last image in series.")
+                        # if size_outliers:
+                        #     print("Size outlier detected. Matching on last image in series.")
+                        try:
+                            prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
+                            previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
+                        except FileNotFoundError:
+                            prev_image_id = os.path.basename(l_series[j - 2]).replace(".txt", "")
+                            previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
+                        except FileNotFoundError:
+                            continue
                         previous_image = np.asarray(previous_image)
                         current_image = save_img
 
@@ -253,11 +265,16 @@ class RoiAligner:
                     except ValueError:
                         self.log_fail(image_id)
                         continue
+
                     warped = skimage.transform.warp(save_img, tform, output_shape=(init_roi_height, roi_widths[0]))
                     warped = skimage.util.img_as_ubyte(warped)
                     cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
-                    # if os.path.getsize(f'{result_path}/{image_id}.JPG') < 600:
-                    #     self.log_fail(image_id)
+                    # time.sleep(5)
+                    # if os.path.getsize(f'{result_path}/{image_id}.JPG') < 700:
+                    #     print("could not derive transformation matrix")
+                    #     f = open(f"{path_output}/unmatched.txt", 'a')
+                    #     f.write(image_id)
+                    #     f.close()
 
                     del size_outliers
 
