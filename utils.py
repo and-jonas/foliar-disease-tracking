@@ -57,11 +57,11 @@ def warp_point(x: int, y: int, M) -> [int, int]:
     ])
 
 
-def find_keypoint_matches(current, current_orig, ref):
+def find_keypoint_matches(current, current_orig, ref, dist_limit=150):
     tree = KDTree(current)
     assoc = []
     for I1, point in enumerate(ref):
-        _, I2 = tree.query(point, k=1, distance_upper_bound=150)
+        _, I2 = tree.query(point, k=1, distance_upper_bound=dist_limit)
         assoc.append((I1, I2))
     # match indices back to key point coordinates
     assocs = []
@@ -204,6 +204,34 @@ def flatten_centroid_data(input, asarray):
     return c
 
 
+def flatten_contour_data(input_contour, asarray, as_point_list=True):
+    """
+    Extract contour points from cv2 format into point list
+    :param input_contour: The cv2 contour to extract
+    :param asarray: Boolean, whether output should be returned as an array
+    :param as_point_list: Boolean, whetheer output should be returned as a point list
+    :return: array or list containing the contour point coordinate pairs
+    """
+    xs = []
+    ys = []
+    for point in input_contour[0]:
+        x = point[0][1]
+        y = point[0][0]
+        xs.append(x)
+        ys.append(y)
+    if as_point_list:
+        point_list = []
+        # for a, b in zip(xs, ys):
+        for a, b in zip(ys, xs):
+            point_list.append([a, b])
+            c = point_list
+        if asarray:
+            c = np.asarray(point_list)
+        return c
+    else:
+        return xs, ys
+
+
 def sort_counterclockwise(points, start, centre=None):
     if centre:
         centre_x, centre_y = centre
@@ -342,3 +370,34 @@ def find_marker_centroids(image, size_th, coordinates, leaf_mask):
                     fontScale=3,
                     color=(255, 0, 0))
     return cleaned, ctr_reord, image
+
+
+def filter_objects_size(mask, size_th, dir):
+    """
+    Filter objects in a binary mask by size
+    :param mask: A binary mask to filter
+    :param size_th: The size threshold used to filter (objects GREATER than the threshold will be kept)
+    :return: A binary mask containing only objects greater than the specified threshold
+    """
+    _, output, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    sizes = stats[1:, -1]
+    if dir == "greater":
+        idx = (np.where(sizes > size_th)[0] + 1).tolist()
+    if dir == "smaller":
+        idx = (np.where(sizes < size_th)[0] + 1).tolist()
+    out = np.in1d(output, idx).reshape(output.shape)
+    cleaned = np.where(out, 0, mask)
+
+    return cleaned
+
+
+def is_multi_channel_img(img):
+    """
+    Checks whether the supplied image is multi- or single channel (binary mask or edt).
+    :param img: The image, binary mask, or edt to process.
+    :return: True if image is multi-channel, False if not.
+    """
+    if len(img.shape) > 2 and img.shape[2] > 1:
+        return True
+    else:
+        return False

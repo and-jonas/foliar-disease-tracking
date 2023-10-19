@@ -124,7 +124,7 @@ for l_series, i_series in zip(label_series, image_series):
         M_img = cv2.getRotationMatrix2D((cols / 2, rows / 2), angle, 1)
         img_rot = cv2.warpAffine(img, M_img, (cols, rows))
 
-        # rotate the bounding box the image's center
+        # rotate the bounding box about the image's center
         M_box = cv2.getRotationMatrix2D((cols / 2, rows / 2), angle, 1)
         box = cv2.boxPoints(rect)
         pts = np.intp(cv2.transform(np.array([box]), M_box))[0]

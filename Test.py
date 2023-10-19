@@ -8,9 +8,9 @@ import numpy as np
 import imutils
 import cv2
 
-import matplotlib
-matplotlib.use('Qt5Agg')
-import matplotlib.pyplot as plt
+# import matplotlib
+# matplotlib.use('Qt5Agg')
+# import matplotlib.pyplot as plt
 
 
 class Stitcher:
