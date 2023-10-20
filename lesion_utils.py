@@ -475,25 +475,3 @@ def get_object_watershed_labels(current_mask, markers):
     separated = np.where(labels != 0, 255, 0)
     return np.uint8(separated)
 
-
-def label_lesions(mask, markers):
-    out_image = np.stack([mask, mask, mask], axis=-1)
-    for marker in np.unique(markers):
-        # if the label is zero, we are examining the 'background'
-        # so simply ignore it
-        if marker == 0:
-            continue
-        # otherwise, allocate memory for the label region and draw
-        # it on the mask
-        M = np.zeros(mask.shape, dtype="uint8")
-        M[markers == marker] = 255
-        # detect contours in the mask and grab the largest one
-        cnts = cv2.findContours(M.copy(), cv2.RETR_EXTERNAL,
-                                cv2.CHAIN_APPROX_SIMPLE)
-        cnts = imutils.grab_contours(cnts)
-        c = max(cnts, key=cv2.contourArea)
-        # draw a circle enclosing the object
-        ((x, y), r) = cv2.minEnclosingCircle(c)
-        cv2.putText(out_image, "{}".format(marker), (int(x) - 10, int(y)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-        return out_image
