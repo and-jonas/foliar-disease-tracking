@@ -8,6 +8,8 @@ import cv2
 import math
 from scipy.spatial import KDTree
 from scipy.spatial import distance as dist
+from scipy.spatial.distance import cdist
+from PIL import Image
 
 
 def reject_outliers(data, m=2.):
@@ -232,6 +234,21 @@ def flatten_contour_data(input_contour, asarray, as_point_list=True):
         return xs, ys
 
 
+def make_cv2_formatted(array):
+    """
+    Takes a 2D array of X and Y coordinates and returns a point list in cv2 fomat
+    :param array: 2d array with X and Y coordinates
+    :return: contour in cv2 format
+    """
+    # get the points to a list
+    L = []
+    for p in range(len(array[0])):
+        L.append([int(array[1][p]), int(array[0][p])])
+    # reshape to cv2 format
+    sm_contour = np.array(L).reshape((-1, 1, 2)).astype(np.int32)
+    return sm_contour
+
+
 def sort_counterclockwise(points, start, centre=None):
     if centre:
         centre_x, centre_y = centre
@@ -391,6 +408,21 @@ def filter_objects_size(mask, size_th, dir):
     return cleaned
 
 
+def keep_central_object(mask):
+    """
+    Filter objects in a binary mask by centroid position
+    :param mask: A binary mask to filter
+    :return: A binary mask containing only the central object (by centroid position)
+    """
+    n_comps, output, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    ctr_img = centroids[0:1]
+    dist = cdist(centroids[1:], ctr_img)
+    min_idx = np.argmin(dist)
+    lesion_mask = np.uint8(np.where(output == min_idx + 1, 255, 0))
+
+    return lesion_mask
+
+
 def is_multi_channel_img(img):
     """
     Checks whether the supplied image is multi- or single channel (binary mask or edt).
@@ -401,3 +433,23 @@ def is_multi_channel_img(img):
         return True
     else:
         return False
+
+
+def make_overlay(patch, mask, colors=[(1, 0, 0, 0.25)]):
+    img_ = Image.fromarray(patch, mode="RGB")
+    img_ = img_.convert("RGBA")
+    class_labels = np.unique(mask)
+    for i, v in enumerate(class_labels[1:]):
+        r, g, b, a = colors[i]
+        M = np.where(mask == v, 255, 0)
+        M = M.ravel()
+        M = np.expand_dims(M, -1)
+        out_mask = np.dot(M, np.array([[r, g, b, a]]))
+        out_mask = np.reshape(out_mask, newshape=(patch.shape[0], patch.shape[1], 4))
+        out_mask = out_mask.astype("uint8")
+        M = Image.fromarray(out_mask, mode="RGBA")
+        img_.paste(M, (0, 0), M)
+    img_ = img_.convert('RGB')
+    overlay = np.asarray(img_)
+
+    return overlay

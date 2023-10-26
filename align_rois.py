@@ -1,8 +1,8 @@
 
 from RoiAligner import RoiAligner
 
-# workdir = 'Z:/Public/Jonas/Data/ESWW007/SingleLeaf'
-workdir = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf"
+workdir = 'Z:/Public/Jonas/Data/ESWW007/SingleLeaf'
+# workdir = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf"
 
 
 def run():
@@ -13,7 +13,7 @@ def run():
         path_labels=path_labels,
         path_images=path_images,
         path_output=path_output,
-        n_cpus=12,
+        n_cpus=1,
     )
     roi_aligner.process_all()
 
