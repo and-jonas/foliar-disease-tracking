@@ -2,63 +2,68 @@
 # ======================================================================================================================
 # Verifies that the extracted image rotation matrix, bounding box coordinates,
 # and final transformation matrix are correct.
+# Crops the roi, rotates and translates roi, transforms detected points,
+# and outputs the rectified masks for further processing.
 # ======================================================================================================================
 
 from PIL import Image
 import numpy as np
-# import json
 import cv2
 import skimage
+import pickle
 import imageio
 import glob
 from pathlib import Path
 import os
 import json
-# import pandas as pd
-import matplotlib
-import matplotlib.pyplot as plt
-matplotlib.use('Qt5Agg')
+import utils
+import multiprocessing
+from importlib import reload
 
-# dir_img = "/home/anjonas/public/Public/Radek/01_Data/A_Eschikon_Field_Experiments/single_leaves_jonas"
-# dir_mask = "/home/anjonas/public/Public/Jonas/011_STB_leaf_tracking/data/single_leaves_jonas_export/predictions"
-# dir_meta = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
-dir_img = "Z:/Public/Radek/01_Data/A_Eschikon_Field_Experiments/single_leaves_jonas"
-dir_mask = "Z:/Public/Jonas/011_STB_leaf_tracking/data/single_leaves_jonas_export/predictions"
-dir_meta = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
+# import matplotlib
+# import matplotlib.pyplot as plt
+# matplotlib.use('Qt5Agg')
+
+dir_img = "/home/anjonas/public/Public/Radek/01_Data/A_Eschikon_Field_Experiments/single_leaves_jonas"
+dir_mask = "/home/anjonas/public/Public/Jonas/011_STB_leaf_tracking/data/single_leaves_jonas_export/predictions"
+dir_meta = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
+# dir_img = "Z:/Public/Radek/01_Data/A_Eschikon_Field_Experiments/single_leaves_jonas"
+# dir_mask = "Z:/Public/Jonas/011_STB_leaf_tracking/data/single_leaves_jonas_export/predictions"
+# dir_meta = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
 masks = glob.glob(f'{dir_mask}/*.png')
 masks = sorted(masks)
 
+existing_output = glob.glob(f'{dir_meta}/*/result/piecewise/*.JPG')
+bnames = [os.path.basename(x).replace(".JPG", "") for x in existing_output]
+masks = [m for m in masks if os.path.basename(m).replace(".png", "") in bnames]
 
-for m in masks:
+# ======================================================================================================================
 
-    print(m)
+
+# Process masks
+def transform_mask(path_to_mask):
+
+    print(path_to_mask)
 
     # get names
-    base_name = os.path.basename(m)
+    base_name = os.path.basename(path_to_mask)
     jpg_name = base_name.replace(".png", ".JPG")
     stem_name = base_name.replace(".png", "")
     leaf_name = "_".join(stem_name.split("_")[2:4])
-    date = stem_name.split("_")[0]
 
     # get mask
-    mask = Image.open(m)
+    mask = Image.open(path_to_mask)
     mask = np.asarray(mask)
 
     # get image
-    try:
-        image = f'{dir_img}/{jpg_name}'
-        img = Image.open(image)
-    except FileNotFoundError:
-        try:
-            image = f'{dir_img}/{jpg_name}'
-            img = Image.open(image)
-        except FileNotFoundError:
-            image = f'{dir_img}/{jpg_name}'
-            img = Image.open(image)
+    image = f'{dir_img}/{jpg_name}'
+    img = Image.open(image)
     img = np.asarray(img)
 
+    # ==================================================================================================================
+
     # get the target (warped roi)
-    target = Image.open(f"{dir_meta}/{leaf_name}/result/{stem_name}.JPG")
+    target = Image.open(f"{dir_meta}/{leaf_name}/result/piecewise/{stem_name}.JPG")
     target = np.asarray(target)
 
     # get bounding box localization info
@@ -69,154 +74,138 @@ for m in masks:
     bbox = np.asarray(data['bounding_box'])
     box_ = np.intp(bbox)
 
-    tform = None
+    tform_piecewise = None
+    tform_projective = None
     if "transformation_matrix" in [k for k in data.keys()]:
-        tform = np.asarray(data['transformation_matrix'])
+        tform_projective = np.asarray(data['transformation_matrix'])
     f.close()
+    try:
+        with open(f'{dir_meta}/{leaf_name}/roi/{stem_name}_tform_piecewise.pkl', 'rb') as file:
+            tform_piecewise = pickle.load(file)
+    except FileNotFoundError:
+        pass
 
-    # get roi
-    # rotate the image about the point that was the center in the original image
+    # get image roi
     full_img = np.zeros((5464, 8192, 3)).astype("uint8")
-
-    # Calculate the centroid
     mw, mh = map(int, np.mean(box_, axis=0))
-
     full_img[mh-1024:mh+1024, :] = img
-
     rows, cols = full_img.shape[0], full_img.shape[1]
-    M_img = rot
-    full_img_rot = cv2.warpAffine(full_img, M_img, (cols, rows))
-
+    full_img_rot = cv2.warpAffine(full_img, rot, (cols, rows))
     ll = full_img_rot[box_[0][1]:box_[2][1], box_[0][0]:box_[1][0]]
 
+    # full mask
     full_mask = np.zeros((5464, 8192)).astype("uint8")
     full_mask[mh - 1024:mh + 1024, :] = mask
-    full_mask_rot = cv2.warpAffine(full_mask, M_img, (cols, rows))
 
-    # shrink to actual roi
-    leaf = full_mask_rot[box_[0][1]:box_[2][1], box_[0][0]:box_[1][0]]
+    # ==================================================================================================================
 
-    # to ease inspection
-    leaf = (leaf.astype("uint32") + 1)*255 / 4
-    leaf = leaf.astype("uint8")
+    # get coordinates of pycnidia and rust pustules
+    pycn = np.where(full_mask == 5)
+    rust = np.where(full_mask == 6)
+
+    # remove points from the mask (would not be maintained during transformation)
+    full_mask = utils.remove_points_from_mask(mask=full_mask, points=pycn)
+    full_mask = utils.remove_points_from_mask(mask=full_mask, points=rust)
+
+    # rotate mask
+    full_mask_rot = cv2.warpAffine(full_mask, rot, (cols, rows))
+
+    # extract points
+    pycn_point_list = np.array([[a, b] for a, b in zip(pycn[1], pycn[0])], dtype=np.int32)
+    rust_point_list = np.array([[a, b] for a, b in zip(rust[1], rust[0])], dtype=np.int32)
+
+    # transform points and filter for roi
+    if len(pycn_point_list) != 0:
+        pycn_trf = utils.rotate_translate_warp_points(
+            points=pycn_point_list,
+            rot=rot, box=box_,
+            mat_proj=tform_projective, mat_pw=tform_piecewise,
+            target_shape=target.shape
+        )
+    else:
+        pycn_trf = [None, None]
+    if len(rust_point_list) != 0:
+        rust_trf = utils.rotate_translate_warp_points(
+            points=rust_point_list,
+            rot=rot, box=box_,
+            mat_proj=tform_projective, mat_pw=tform_piecewise,
+            target_shape=target.shape
+        )
+    else:
+        rust_trf = [None, None]
+    # ==================================================================================================================
+
+    # shrink mask to actual roi
+    leaf_mask = full_mask_rot[box_[0][1]:box_[2][1], box_[0][0]:box_[1][0]]
 
     out_dir = Path(f'{dir_meta}/{leaf_name}/mask_aligned/')
-    if not out_dir.exists():
-        out_dir.mkdir(exist_ok=True, parents=True)
-    mask_name = f'{out_dir}/{base_name}'
+    out_dir_pw = out_dir / "piecewise"
+    out_dir_proj = out_dir / "projective"
+    for dir in [out_dir_pw, out_dir_proj]:
+        dir.mkdir(exist_ok=True, parents=True)
 
-    if tform is not None:
-        warped_m = skimage.transform.warp(leaf, tform, output_shape=target.shape)
-        warped_m = skimage.util.img_as_ubyte(warped_m)
+    tform = [tform_projective, tform_piecewise]
+    out_dir = [out_dir_proj, out_dir_pw]
 
-        # perform the transformation
-        warped = skimage.transform.warp(ll, tform, output_shape=target.shape)
-        warped = skimage.util.img_as_ubyte(warped)
-        imageio.imwrite(mask_name, warped_m)
-    else:
-        imageio.imwrite(mask_name, leaf)
+    for i, tf in enumerate(tform):
 
-    tform = None
+        mask_name = f'{out_dir[i]}/{base_name}'
 
-    # # test
-    # fig, axs = plt.subplots(1, 3, sharex=True, sharey=True)
-    # axs[0].imshow(target)
-    # axs[0].set_title('leaf')
-    # axs[1].imshow(warped)
-    # axs[1].set_title('warped')
-    # axs[2].imshow(warped_m)
-    # axs[2].set_title('target')
-    # plt.show(block=True)
-    #
-    # warped_m.shape
-    # warped.shape
-    # target.shape
-    #
-    # diff = np.abs(warped[:, :, 0]+100 - target[:, :, 0])
-    # plt.imshow(diff)
-    # OK!!
+        if tf is not None:
+
+            # warp mask
+            lm = np.stack([leaf_mask, leaf_mask, leaf_mask], axis=2)
+            warped_m = skimage.transform.warp(lm, tf, output_shape=target.shape)
+            warped_m = skimage.util.img_as_ubyte(warped_m[:, :, 0])
+
+            warped_m = utils.add_points_to_mask(
+                mask=warped_m,
+                pycn_trf=pycn_trf[i],
+                rust_trf=rust_trf[i]
+            )
+
+            imageio.imwrite(mask_name, warped_m)
+
+            # # warp image
+            # warped = skimage.transform.warp(ll, tf, output_shape=target.shape)
+            # warped = skimage.util.img_as_ubyte(warped)
+
+        else:
+
+            leaf_mask = utils.add_points_to_mask(
+                mask=leaf_mask,
+                pycn_trf=pycn_trf[i],
+                rust_trf=rust_trf[i]
+            )
+
+            imageio.imwrite(mask_name, leaf_mask)
 
 
 # ======================================================================================================================
 
-# check the output
 
-from pathlib import Path
-import itertools
+for m in masks:
+    transform_mask(m)
 
-# def list_by_sample(path_rois, path_images):
-#
-#     roi_series = []
-#     image_series = []
-#
-#     labels = glob.glob(f'{path_rois}/*.json')
-#     images = glob.glob(f'{path_images}/*.JPG')
-#     label_image_id = ["_".join(os.path.basename(l).split("_")[2:4]).replace(".txt", "") for l in labels]
-#     image_image_id = ["_".join(os.path.basename(l).split("_")[2:4]).replace(".JPG", "") for l in images]
-#     uniques = np.unique(label_image_id)
-#
-#     len(images)
-#     len(labels)
-#
-#     # if len(images) != len(labels):
-#         # raise Exception("list of images and list of coordinate files are not of equal length.")
-#         # warnings.warn("list of images and list of coordinate files are not of equal length."
-#         #               "Ignoring extra coordinate files.")
-#
-#     print("found " + str(len(uniques)) + " unique sample names")
-#
-#     for unique_sample in uniques:
-#         image_idx = [index for index, image_id in enumerate(image_image_id) if unique_sample == image_id]
-#         label_idx = [index for index, label_id in enumerate(label_image_id) if unique_sample == label_id]
-#         sample_image_names = [images[i] for i in image_idx]
-#         sample_labels = [labels[i] for i in label_idx]
-#         roi_series.append(sample_labels)
-#         image_series.append(sample_image_names)
-#
-#     return roi_series, image_series
-#
-# r_list, i_list = list_by_sample(path_rois='Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output/*/roi',
-#                                 path_images='Z:/Public/Jonas/Data/ESWW007/SingleLeaf/*/JPEG_cam')
-#
-#
-# data_root = 'Z:/Public/Jonas/Data/ESWW007/SingleLeaf/'
-# roi_root = 'Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output/'
-#
-# # path = Path(data_root)
-# # path_roi = Path(roi_root)
-#
-#
-# def list_by_date(data_root, roi_root):
-#
-#     dates = glob.glob(f'{data_root}/2023*')
-#     dates = [os.path.basename(x) for x in dates]
-#
-#     rois = [x for x in glob.glob(f"{roi_root}/*/roi/*.json")]
-#
-#     JPG = []
-#     ROI = []
-#     for d in dates:
-#
-#         # get all image paths
-#         jpg_paths = glob.glob(f"{data_root}/{d}/JPEG_cam/*.JPG")
-#         # get file names
-#         jpg_files = [os.path.basename(x).replace(".JPG", "") for x in jpg_paths]
-#
-#         # get corresponding roi paths
-#         roi_paths = []
-#         for b in jpg_files:
-#             a = [x for x in rois if b in x]
-#             roi_paths.append(a)
-#         roi_paths = [item for sublist in roi_paths for item in sublist]
-#         roi_files = [os.path.basename(x).replace(".json", "") for x in roi_paths]
-#
-#         # ignore image paths, if no corresponding roi path is found
-#         roi_idx = [index for index, roi_id in enumerate(roi_files) if roi_id in jpg_files]
-#         roi_files = [roi_paths[i] for i in roi_idx]
-#
-#         JPG.append(jpg_paths)
-#         ROI.append(roi_files)
-#
-#     return JPG, ROI
+# ======================================================================================================================
 
 
+if __name__ == '__main__':
+
+    dir_img = "/home/anjonas/public/Public/Radek/01_Data/A_Eschikon_Field_Experiments/single_leaves_jonas"
+    dir_mask = "/home/anjonas/public/Public/Jonas/011_STB_leaf_tracking/data/single_leaves_jonas_export/predictions"
+    dir_meta = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
+    masks = glob.glob(f'{dir_mask}/*.png')
+
+    existing_output = glob.glob(f'{dir_meta}/*/result/piecewise/*.JPG')
+    bnames = [os.path.basename(x).replace(".JPG", "") for x in existing_output]
+    masks = [m for m in masks if os.path.basename(m).replace(".png", "") in bnames]
+
+    # num_processes = multiprocessing.cpu_count()  # Use the number of CPU cores
+    num_processes = 20
+
+    # Create a multiprocessing pool to parallelize the loop
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        pool.map(transform_mask, masks)
+
+# ======================================================================================================================

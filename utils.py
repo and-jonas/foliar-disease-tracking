@@ -10,6 +10,11 @@ from scipy.spatial import KDTree
 from scipy.spatial import distance as dist
 from scipy.spatial.distance import cdist
 from PIL import Image
+import skimage
+from scipy.ndimage import map_coordinates
+# import matplotlib
+# import matplotlib.pyplot as plt
+# matplotlib.use('Qt5Agg')
 
 
 def reject_outliers(data, m=2.):
@@ -29,9 +34,8 @@ def reject_outliers(data, m=2.):
 def reject_size_outliers(data, max_diff):
     """
     Detects outliers in 1d and returns the list index of the outliers
-    :param d: size difference threshold in px
+    :param max_diff: size difference threshold in px
     :param data: 1d array
-    :param m:
     :return: list index of outliers
     """
     mean_size_prev = np.mean(data[:-1])
@@ -59,7 +63,95 @@ def warp_point(x: int, y: int, M) -> [int, int]:
     ])
 
 
+def remove_points_from_mask(mask, points):
+    """
+    Removes the predicted pycnidia and rust pustules from the mask. Replaces the relevant pixel values with the average
+    of the surrounding pixels. Points need to be transformed separately and added again to the transformed mask.
+    :param mask: the mask to remove the points from
+    :param points: to coordinates of the points to be removed
+    :return: The "cleaned" mask
+    """
+    y_points, x_points = points
+    for i in range(len(y_points)):
+        row, col = y_points[i], x_points[i]
+        surrounding_pixels = mask[max(0, row - 1):min(row + 2, mask.shape[0]),
+                             max(0, col - 1):min(col + 2, mask.shape[1])]
+        average_value = np.mean(surrounding_pixels)
+        mask[row, col] = average_value
+    return mask
+
+
+def rotate_translate_warp_points(points, rot, box, mat_proj, mat_pw, target_shape):
+    """
+    rotates, translates, and warps point coordinates to match the transformed mask.
+    Fitlters detected point lying outside the roi.
+    :param points: a list of 2D points
+    :param rot: rotation matrix applied to the msak
+    :param box: the corner coordinates of the bounding box used to crop he roi from the image
+    :param warp: the transformation matrix
+    :param target_shape: the dimension of the desired output image
+    :return: transformed point coordinates
+    """
+    # rotate
+    points_rot = np.intp(cv2.transform(np.array([points]), rot))[0]
+
+    # translate
+    tx, ty = (-box[0][0], -box[0][1])
+    translation_matrix = np.array([
+        [1, 0, tx],
+        [0, 1, ty]
+    ], dtype=np.float32)
+    points_trans = np.intp(cv2.transform(np.array([points_rot]), translation_matrix))[0]
+
+    if mat_proj is not None:
+        # make an AffineTransform object for direct application to points
+        tform = skimage.transform.AffineTransform(matrix=mat_proj)
+        # TODO is the inverse needed??? Is that a scikit-image vs OpenCV issue??
+        tf_points_proj = tform.inverse(points_trans).astype("int64")
+    else:
+        tf_points_proj = points_trans
+    if mat_pw is not None:
+        tform = mat_pw
+        tf_points_pw = tform.inverse(points_trans).astype("uint64")
+    else:
+        tf_points_pw = points_trans
+
+    # remove any point outside the roi
+    # Create a boolean mask based on the ROI
+    mask_proj = (tf_points_proj[:, 1] < target_shape[0]) & (tf_points_proj[:, 1] > 0) & \
+                (tf_points_proj[:, 0] < target_shape[1]) & (tf_points_proj[:, 0] > 0)
+    mask_pw = (tf_points_pw[:, 1] < target_shape[0]) & (tf_points_pw[:, 1] > 0) & \
+              (tf_points_pw[:, 0] < target_shape[1]) & (tf_points_pw[:, 0] > 0)
+
+    # Filter points based on the mask
+    filtered_points_proj = tf_points_proj[mask_proj]
+    filtered_points_pw = tf_points_pw[mask_pw]
+
+    return [filtered_points_proj, filtered_points_pw]
+
+
+def add_points_to_mask(mask, pycn_trf, rust_trf):
+
+    # add points again
+    try:
+        mask[pycn_trf[:, 1], pycn_trf[:, 0]] = 4  # pycnidia
+    except TypeError:
+        pass
+    try:
+        mask[rust_trf[:, 1], rust_trf[:, 0]] = 5  # rust
+    except TypeError:
+        pass
+
+    # to ease inspection
+    mask = (mask.astype("uint32")) * 255 / 5
+    mask = mask.astype("uint8")
+
+    return mask
+
+
 def find_keypoint_matches(current, current_orig, ref, dist_limit=150):
+
+    # MAKE AND QUERY TREE
     tree = KDTree(current)
     assoc = []
     for I1, point in enumerate(ref):
@@ -112,10 +204,11 @@ def order_points(pts):
     """
     # sort the points based on their x-coordinates
     xSorted = pts[np.argsort(pts[:, 0]), :]
+
     # grab the left-most and right-most points from the sorted
     # x-roodinate points
     leftMost = xSorted[:2, :]
-    rightMost = xSorted[2:, :]
+    rightMost = xSorted[-2:, :]
     # now, sort the left-most coordinates according to their
     # y-coordinates so we can grab the top-left and bottom-left
     # points, respectively
@@ -453,3 +546,85 @@ def make_overlay(patch, mask, colors=[(1, 0, 0, 0.25)]):
     overlay = np.asarray(img_)
 
     return overlay
+
+
+def interpolate_transformed_image_rgb(image, tform, output_shape):
+
+    # Generate grid of coordinates for the output image
+    grid_x, grid_y = np.meshgrid(np.arange(output_shape[0]), np.arange(output_shape[1]))
+    output_coords = np.vstack([grid_x.ravel(), grid_y.ravel()])
+
+    # Apply the inverse transform to get coordinates in the original image space
+    src_coords = tform.inverse(output_coords.T).T
+
+    # Perform interpolation using map_coordinates for each channel
+    channels = [map_coordinates(image[:, :, i], src_coords, order=3, mode='constant').reshape(output_shape) for i in range(image.shape[2])]
+
+    # Stack the channels to form the RGB image
+    return np.stack(channels, axis=-1)
+
+
+def Intersect2Circles(A, a, B, b):
+    # A, B = [x, y]
+    # return = [Q1, Q2] or [Q] or [] where Q = [x, y]
+    AB0 = B[0] - A[0]
+    AB1 = B[1] - A[1]
+    c = math.sqrt(AB0 * AB0 + AB1 * AB1)
+
+    if c == 0:
+        # no distance between centers
+        return []
+
+    x = (a * a + c * c - b * b) / (2 * c)
+    y = a * a - x * x
+
+    if y < 0:
+        # no intersection
+        return []
+
+    if y > 0:
+        y = math.sqrt(y)
+
+    # compute unit vectors ex and ey
+    ex0 = AB0 / c
+    ex1 = AB1 / c
+    ey0 = -ex1
+    ey1 = ex0
+
+    Q1x = A[0] + x * ex0
+    Q1y = A[1] + x * ex1
+
+    if y == 0:
+        # one touch point
+        return [[Q1x, Q1y]]
+
+    # two intersections
+    Q2x = Q1x - y * ey0
+    Q2y = Q1y - y * ey1
+    Q1x += y * ey0
+    Q1y += y * ey1
+
+    return [[Q1x, Q1y], [Q2x, Q2y]]
+
+
+def get_corners(pts):
+
+    upper = pts[pts[:, 1] < 300]
+    lower = pts[pts[:, 1] > 300]
+
+    # sort the points based on their x-coordinates
+    upper_x_sort = upper[np.argsort(upper[:, 0]), :]
+    lower_x_sort = lower[np.argsort(lower[:, 0]), :]
+
+    # grab the left-most and right-most points from the sorted
+    # x-roodinate points
+    upper_left = upper_x_sort[:1, :][0]
+    upper_right = upper_x_sort[-1:, :][0]
+    lower_left = lower_x_sort[:1, :][0]
+    lower_right = lower_x_sort[-1:, :][0]
+
+    return np.array([upper_left, upper_right, lower_left, lower_right], dtype="int")
+
+
+
+

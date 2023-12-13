@@ -10,6 +10,8 @@ import utils
 from scipy import ndimage as ndi
 import imutils
 from skimage.segmentation import watershed
+from matplotlib import path
+
 # import matplotlib
 # import matplotlib.pyplot as plt
 # matplotlib.use('Qt5Agg')
@@ -331,14 +333,19 @@ def spline_approx_contour(contour, sf=0.25):
     points.
     """
     # re-sample contour points
-    contour_points = utils.flatten_contour_data(contour, asarray=True)
+    contour_points = utils.flatten_contour_data(input_contour=contour, asarray=True)
+
     # find B-Spline representation of contour
     # control smoothing
     s = sf * len(contour_points) - np.sqrt(2*len(contour_points))
-    tck, u = si.splprep(contour_points.T, u=None, s=s, per=1, quiet=1)
-    # evaluate  B-spline
-    u_new = np.linspace(u.min(), u.max(), int(len(contour_points)))
-    y_new, x_new = si.splev(u_new, tck, der=0)
+    try:
+        tck, u = si.splprep(contour_points.T, u=None, s=s, per=1, quiet=1)
+        # evaluate  B-spline
+        u_new = np.linspace(u.min(), u.max(), int(len(contour_points)))
+        y_new, x_new = si.splev(u_new, tck, der=0)
+    except (ValueError, TypeError) as error:
+        print(error)
+        x_new, y_new = ([], [])
     return x_new, y_new
 
 
@@ -360,42 +367,52 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker):
 
     # get spline points and smoothed contour
     spline_points = spline_approx_contour(contour, sf=0.25)
-    sm_contour = utils.make_cv2_formatted(spline_points)
 
-    # get spline normals
-    spl_n = get_spline_normals(spline_points=spline_points)
+    # if the spline approximation was successful, process normally
+    # otherwise make empty
+    if not len(spline_points[0]) == 0:
 
-    # sample normals on image and on false object mask
-    color_profiles = extract_normals_pixel_values(img=img, normals=spl_n)
+        sm_contour = utils.make_cv2_formatted(spline_points)
 
-    # sample normals on distance maps
-    mask_invert = np.bitwise_not(mask_obj)
-    distance_invert = ndi.distance_transform_edt(mask_invert)
-    dist_profiles_outer = extract_normals_pixel_values(img=distance_invert, normals=spl_n)
+        # get spline normals
+        spl_n = get_spline_normals(spline_points=spline_points)
 
-    # sample normals on leaf masks
-    leaf_profiles = extract_normals_pixel_values(img=mask_leaf, normals=spl_n)
+        # sample normals on image and on false object mask
+        color_profiles = extract_normals_pixel_values(img=img, normals=spl_n)
 
-    # remove normals that extend into lesion or beyond lesion "center"
-    checked_profiles, spl_n_full, spl_n_red = check_color_profiles(
-        color_profiles=color_profiles,
-        dist_profiles_outer=dist_profiles_outer,
-        leaf_profiles=leaf_profiles,
-        spline_normals=spl_n,
-    )
+        # sample normals on distance maps
+        mask_invert = np.bitwise_not(mask_obj)
+        distance_invert = ndi.distance_transform_edt(mask_invert)
+        dist_profiles_outer = extract_normals_pixel_values(img=distance_invert, normals=spl_n)
 
-    # remove normals extending into neighbor lesions
-    if not spl_n == spl_n_red:
-        mask_all_invert = np.bitwise_not(mask_all)
-        distance_invert_all = ndi.distance_transform_edt(mask_all_invert)
-        dist_profiles_multi = extract_normals_pixel_values(img=distance_invert_all, normals=spl_n_full)
-        final_profiles, spl_n_full_l, spl_n_red_l = remove_neighbor_lesions(
-            checked_profiles=checked_profiles,
-            dist_profiles_multi=dist_profiles_multi,
-            spl_n_clean=spl_n_full,
+        # sample normals on leaf masks
+        leaf_profiles = extract_normals_pixel_values(img=mask_leaf, normals=spl_n)
+
+        # remove normals that extend into lesion
+        checked_profiles, spl_n_full, spl_n_red = check_color_profiles(
+            color_profiles=color_profiles,
+            dist_profiles_outer=dist_profiles_outer,
+            leaf_profiles=leaf_profiles,
+            spline_normals=spl_n,
         )
+
+        # remove normals extending into neighbor lesions
+        if not spl_n == spl_n_red:
+            mask_all_invert = np.bitwise_not(mask_all)
+            distance_invert_all = ndi.distance_transform_edt(mask_all_invert)
+            dist_profiles_multi = extract_normals_pixel_values(img=distance_invert_all, normals=spl_n_full)
+            final_profiles, spl_n_full_l, spl_n_red_l = remove_neighbor_lesions(
+                checked_profiles=checked_profiles,
+                dist_profiles_multi=dist_profiles_multi,
+                spl_n_clean=spl_n_full,
+            )
+        else:
+            final_profiles, spl_n_full_l, spl_n_red_l = None, [], []
     else:
-        final_profiles, spl_n_full_l, spl_n_red_l = None, [], []
+        spl_n = []
+        spl_n_full = []
+        sm_contour = []
+        final_profiles, spl_n_full_l, spl_n_red, spl_n_red_l = None, [], [], []
 
     # create the check image
     # add analyzable normals
@@ -406,11 +423,13 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker):
         for i in range(len(spl_n_red_l)):
             cv2.drawContours(checker, spl_n_red_l[i], -1, (0, 255, 0), 1)
     # add normals on leaf edges or extending into the lesion itself
-    for i in range(len(spl_n_red)):
-        cv2.drawContours(checker, spl_n_red[i], -1, (0, 122, 0), 1)
+    if spl_n_red_l is not None:
+        for i in range(len(spl_n_red)):
+            cv2.drawContours(checker, spl_n_red[i], -1, (0, 122, 0), 1)
     # add smoothed contour
-    for c in [sm_contour]:
-        cv2.drawContours(checker, c, -1, (0, 0, 255), 1)
+    if sm_contour is not None:
+        for c in [sm_contour]:
+            cv2.drawContours(checker, c, -1, (0, 0, 255), 1)
 
     return final_profiles, checker, (spl_n, spl_n_full_l, spl_n_red_l, spl_n_red), spline_points
 
@@ -440,3 +459,68 @@ def get_object_watershed_labels(current_mask, markers):
     labels = labels * current_mask/255
     separated = np.where(labels != 0, 255, 0)
     return np.uint8(separated)
+
+
+def complement_mask(leaf_mask, seg, seg_lag, kpts):
+
+    # sort the points based on their x-coordinates
+    kpts = np.array(kpts)
+    upper = kpts[kpts[:, 1] < 300]
+    lower = kpts[kpts[:, 1] > 300]
+    xSortedUpper = upper[np.argsort(upper[:, 0]), :]
+    xSortedLower = lower[np.argsort(lower[:, 0]), :]
+
+    # grab the left-most and right-most points from the sorted x-roodinate points
+    leftMostUpper = xSortedUpper[:1, :][:, 0]
+    rightMostUpper = xSortedUpper[-1:, :][:, 0]
+    leftMostLower = xSortedLower[:1, :][:, 0]
+    rightMostLower = xSortedLower[-1:, :][:, 0]
+
+    leftMost = leftMostUpper[0], leftMostLower[0]
+    rightMost = rightMostUpper[0], rightMostLower[0]
+
+    # check if a part of the leaf is missing
+    if any(num < leaf_mask.shape[1]-250 for num in rightMost):
+
+        # transform coordinates to a path
+        ur = tuple(xSortedUpper[-1:, :][0])
+        u_corner = tuple([leaf_mask.shape[1], 0])
+        l_corner = tuple([leaf_mask.shape[1], leaf_mask.shape[0]])
+        lr = tuple(xSortedLower[-1:, :][0])
+        grid_path = path.Path([ur, u_corner, l_corner, lr, ur], closed=False)
+
+        # create a mask of the image
+        xcoords = np.arange(0, leaf_mask.shape[0])
+        ycoords = np.arange(0, leaf_mask.shape[1])
+        coords = np.transpose([np.repeat(ycoords, len(xcoords)), np.tile(xcoords, len(ycoords))])
+
+        # Create mask
+        c_mask = grid_path.contains_points(coords, radius=-0.5)
+        c_mask = np.swapaxes(c_mask.reshape(leaf_mask.shape[1], leaf_mask.shape[0]), 0, 1)
+        c_mask = np.where(c_mask, 1, 0).astype("uint8")
+
+        seg_lag_complement = c_mask * seg_lag
+        seg = seg + seg_lag_complement
+
+    if any(num > 250 for num in leftMost):
+        # transform coordinates to a path
+        ul = tuple(xSortedUpper[:1, :][0])
+        ll = tuple(xSortedLower[:1, :][0])
+        l_corner = tuple([0, leaf_mask.shape[0]])
+        u_corner = tuple([0, 0])
+        grid_path = path.Path([ul, ll, l_corner, u_corner, ul], closed=False)
+
+        # create a mask of the image
+        xcoords = np.arange(0, leaf_mask.shape[0])
+        ycoords = np.arange(0, leaf_mask.shape[1])
+        coords = np.transpose([np.repeat(ycoords, len(xcoords)), np.tile(xcoords, len(ycoords))])
+
+        # Create mask
+        c_mask = grid_path.contains_points(coords, radius=-0.5)
+        c_mask = np.swapaxes(c_mask.reshape(leaf_mask.shape[1], leaf_mask.shape[0]), 0, 1)
+        c_mask = np.where(c_mask, 1, 0).astype("uint8")
+
+        seg_lag_complement = c_mask * seg_lag
+        seg = seg + seg_lag_complement
+
+    return seg

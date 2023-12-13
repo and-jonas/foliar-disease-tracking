@@ -16,6 +16,8 @@ import glob
 import os
 import copy
 import skimage
+import pickle
+from scipy.spatial import distance as dist
 from Test import Stitcher
 import warnings
 matplotlib.use('Qt5Agg')
@@ -23,7 +25,7 @@ matplotlib.use('Qt5Agg')
 # path_labels = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Test/runs/pose/predict4/labels"
 # path_images = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Test"
 
-path_labels = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/*/JPEG_cam/runs/pose/predict*/labels"
+path_labels = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/*/JPEG_cam/runs/pose/predict2/labels"
 path_images = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/*/JPEG_cam"
 
 
@@ -65,8 +67,8 @@ label_series, image_series = list_by_sample(
 
 path_output = Path("Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output")
 
-l_series = label_series[2]
-i_series = image_series[2]
+l_series = label_series[3]
+i_series = image_series[3]
 
 with open(f"{path_output}/unmatched.txt", 'w') as file:
     pass
@@ -81,7 +83,7 @@ for l_series, i_series in zip(label_series, image_series):
 
     roi_widths = []
     for j in range(len(l_series)):
-    # for j in range(8):
+    # for j in range(9):
 
         image_id = os.path.basename(l_series[j]).replace(".txt", "")
         sample_id = "_".join(os.path.basename(l_series[j]).split("_")[2:4]).replace(".txt", "")
@@ -90,10 +92,14 @@ for l_series, i_series in zip(label_series, image_series):
 
         # generate output paths for each sample and create directories
         sample_output_path = path_output / sample_id
+        kpts_path = sample_output_path / "keypoints"
         overlay_path = sample_output_path / "overlay"
         roi_path = sample_output_path / "roi"
         result_path = sample_output_path / "result"
-        for p in (overlay_path, roi_path, result_path):
+        result_pw = result_path / "piecewise"
+        result_poly = result_path / "polynomial"
+        result_proj = result_path / "projective"
+        for p in (kpts_path, overlay_path, roi_path, result_pw, result_poly, result_proj):
             p.mkdir(parents=True, exist_ok=True)
 
         # get key point coordinates from YOLO output
@@ -105,9 +111,17 @@ for l_series, i_series in zip(label_series, image_series):
         img = Image.open(i_series[j])
         img = np.array(img)
 
+        # remove double detections
+        point_list = np.array([[a, b] for a, b in zip(x, y)], dtype=np.int32)
+        dmat = dist.cdist(point_list, point_list, "euclidean")
+        np.fill_diagonal(dmat, np.nan)
+        dbl_idx = np.where(dmat < 100)[0].tolist()[::2]
+        point_list = np.delete(point_list, dbl_idx, axis=0)
+        x = np.delete(x, dbl_idx, axis=0)
+        y = np.delete(y, dbl_idx, axis=0)
+
         # remove outliers in the key point detections from YOLO errors,
         # get minimum area rectangle around retained key points
-        point_list = np.array([[a, b] for a, b in zip(x, y)], dtype=np.int32)
         outliers_x = utils.reject_outliers(x, m=3.)  # larger extension, larger variation
         outliers_y = utils.reject_outliers(y, m=2.)  # smaller extension, smaller variation
         outliers = outliers_x + outliers_y
@@ -139,7 +153,7 @@ for l_series, i_series in zip(label_series, image_series):
         # draw key points and bounding box on overlay image as check
         overlay = copy.copy(img)
         for point in point_list:
-            cv2.circle(overlay, (point[0], point[1]), radius=15, color=(0, 0, 255), thickness=9)
+            cv2.circle(overlay, (point[0], point[1]), radius=15, color=(0, 0, 255), thickness=2)
         box_ = np.intp(box)
         cv2.drawContours(overlay, [box_], 0, (255, 0, 0), 9)
         overlay = cv2.resize(overlay, (0, 0), fx=0.25, fy=0.25)
@@ -174,18 +188,24 @@ for l_series, i_series in zip(label_series, image_series):
             [0, 1, ty]
         ], dtype=np.float32)
 
-        # apply  translation to key points
+        # apply translation to key points
         kpts = np.intp(cv2.transform(np.array([kpts]), translation_matrix))[0]
+
+        # # write rotated and translated key points to file for eventual later use
+        # data = {"x": kpts[:, 0], "y": kpts[:, 1]}
+        # df = pd.DataFrame(data)
+        # df.to_csv(f'{kpts_path}/{image_id}.txt', index=False)
 
         # match all images in the series to the first image where possible
         if j == 0:
             kpts_ref = kpts
-            cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(save_img, cv2.COLOR_BGR2RGB))
+            cv2.imwrite(f'{result_pw}/{image_id}.JPG', cv2.cvtColor(save_img, cv2.COLOR_BGR2RGB))
+            cv2.imwrite(f'{result_proj}/{image_id}.JPG', cv2.cvtColor(save_img, cv2.COLOR_BGR2RGB))
         elif j > 0:
             # match key points with those on the first image of the series
             # by searching for the closest points
             # if non is found in proximity, eliminate from both images
-            src, dst = utils.find_keypoint_matches(kpts, kpts, kpts_ref)
+            src, dst = utils.find_keypoint_matches(current=kpts, current_orig=kpts, ref=kpts_ref)
 
             # if there are few matches, or if there is a different size from the expected,
             # there is likely a translation due to key point detection errors
@@ -197,12 +217,12 @@ for l_series, i_series in zip(label_series, image_series):
                     print("Size outlier detected. Matching on last image in series.")
                 try:
                     prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
-                    previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
+                    previous_image = Image.open(f'{result_pw}/{prev_image_id}.JPG')
                 except FileNotFoundError:
                     prev_image_id = os.path.basename(l_series[j - 2]).replace(".txt", "")
-                    previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
-                except FileNotFoundError:
-                    continue
+                    previous_image = Image.open(f'{result_pw}/{prev_image_id}.JPG')
+                # except FileNotFoundError:
+                #     continue
                 previous_image = np.asarray(previous_image)
                 current_image = save_img
 
@@ -225,7 +245,7 @@ for l_series, i_series in zip(label_series, image_series):
                     f = open(f"{path_output}/unmatched.txt", 'a')
                     f.writelines(image_id + "\n")
                     f.close()
-                    continue
+                    # continue
 
                 # warp image by applying the inverse of the homography matrix
                 warped = cv2.warpPerspective(current_image, np.linalg.inv(H),
@@ -238,12 +258,150 @@ for l_series, i_series in zip(label_series, image_series):
                 # try again to match key points with those on the first image of the series
                 src, dst = utils.find_keypoint_matches(kpts_warped, kpts, kpts_ref)
 
+                kpts = np.asarray(kpts_warped)
+
+            # # Try to fill in the missing corner markers based on distances in the previous frame
+            #
+            # # get left-most and right-most point and compare
+            # prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
+            # kpts_lag = pd.read_csv(f'{kpts_path}/{prev_image_id}.txt')
+            # tl_lag, tr_lag, br_lag, bl_lag = utils.order_points(np.asarray(kpts_lag))
+            #
+            # # get corners in reference image
+            # tl_ref, tr_ref, bl_ref, br_ref = utils.get_corners(np.asarray(kpts_ref))
+            #
+            # # get corners of current image
+            # tl_cur, tr_cur, bl_cur, br_cur = utils.get_corners(kpts)
+            #
+            # # get corners of dst
+            # tl_dst, tr_dst, bl_dst, br_dst = utils.get_corners(np.asarray(dst))
+            #
+            # dist_tl = np.abs(tl_ref[0] - tl_cur[0])
+            # dist_bl = np.abs(bl_ref[0] - bl_cur[0])
+            # dist_tr = np.abs(tr_ref[0] - tr_cur[0])
+            # dist_br = np.abs(br_ref[0] - br_cur[0])
+            #
+            # if any([dist_tl > 250, dist_bl > 250, dist_tr > 250, dist_br > 250]):
+            #     try:
+            #         prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
+            #         previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
+            #     except FileNotFoundError:
+            #         prev_image_id = os.path.basename(l_series[j - 2]).replace(".txt", "")
+            #         previous_image = Image.open(f'{result_path}/{prev_image_id}.JPG')
+            #     except FileNotFoundError:
+            #         continue
+            #
+            #     previous_image = np.asarray(previous_image)
+            #     # plt.imshow(previous_image)
+            #
+            #     coords = pd.read_csv(f'{kpts_path}/{prev_image_id}.txt')
+            #     x = coords["x"]
+            #     y = coords["y"]
+            #
+            #     point_list_lag = np.array([[a, b] for a, b in zip(x, y)], dtype=np.int32)
+            #     upper_lag = point_list_lag[point_list_lag[:, 1] < 300]
+            #     lower_lag = point_list_lag[point_list_lag[:, 1] > 300]
+            #
+            #     # top left OK
+            #     if dist_tl > 250:
+            #         # in lag, find marker in top row that is closest to the current left-most marker
+            #         anchor1 = upper_lag[np.argmin(dist.cdist(np.array([tl_dst]), upper_lag, "euclidean")[0])]
+            #         # measure how far this marker is away from the left-most marker in the lag image
+            #         dist1 = dist.cdist(np.array([anchor1]), np.array([tl_lag]), "euclidean")[0][0]
+            #         # get distance between tl and bl
+            #         dist2 = dist.cdist(np.array([bl_lag]), np.array([tl_lag]), "euclidean")[0][0]
+            #         result = utils.Intersect2Circles(tl_dst, dist1, bl_dst, dist2)
+            #         index = dist.cdist(np.array([[0, 0]]), np.array(result), "euclidean").argmin()
+            #         try:
+            #             index = dist.cdist(np.array([[0, 0]]), np.array(result), "euclidean").argmin()
+            #             result = result[index]
+            #             tl_inferred = np.asarray(result, dtype="int64").tolist()
+            #             dst += [tl_inferred]
+            #             src += [tl_ref.tolist()]
+            #         except IndexError:
+            #             pass
+            #
+            #     # bottom right OK
+            #     if dist_br > 200:
+            #         # in lag, find marker in bottom row that is closest to the current right-most marker
+            #         anchor1 = lower_lag[np.argmin(dist.cdist(np.array([br_dst]), lower_lag, "euclidean")[0])]
+            #         # measure how far this marker is away from the right-most marker in the lag image
+            #         dist1 = dist.cdist(np.array([anchor1]), np.array([br_lag]), "euclidean")[0][0]
+            #         # get distance between tr and br
+            #         dist2 = dist.cdist(np.array([tr_lag]), np.array([br_lag]), "euclidean")[0][0]
+            #         result = utils.Intersect2Circles(br_dst, dist1, tr_dst, dist2)
+            #         try:
+            #             # identify the point, based on distance to a rough proxy
+            #             index = dist.cdist(np.array([[save_img.shape[1], save_img.shape[0]]]), np.array(result),
+            #                                "euclidean").argmin()
+            #             result = result[index]
+            #             br_inferred = np.asarray(result, dtype="int64").tolist()
+            #             dst += [br_inferred]
+            #             src += [br_ref.tolist()]
+            #         except IndexError:
+            #             pass
+            #
+            #     # top right OK
+            #     if dist_tr > 200:
+            #         # in lag, find marker in top row that is closest to the current right-most marker
+            #         anchor1 = upper_lag[np.argmin(dist.cdist(np.array([tr_dst]), upper_lag, "euclidean")[0])]
+            #         # measure how far this marker is away from the right-most marker in the lag image
+            #         dist1 = dist.cdist(np.array([anchor1]), np.array([tr_lag]), "euclidean")[0][0]
+            #         # get distance between tr and br
+            #         dist2 = dist.cdist(np.array([br_lag]), np.array([tr_lag]), "euclidean")[0][0]
+            #         result = utils.Intersect2Circles(tr_dst, dist1, br_dst, dist2)
+            #         try:
+            #             # identify the point, based on distance to a rough proxy
+            #             index = dist.cdist(np.array([[save_img.shape[1], 0]]), np.array(result), "euclidean").argmin()
+            #             result = result[index]
+            #             tr_inferred = np.asarray(result, dtype="int64").tolist()
+            #             # tr_inferred = [4400, 0]
+            #             dst += [tr_inferred]
+            #             src += [tr_ref.tolist()]
+            #         except (IndexError, ValueError):
+            #             pass
+            #
+            #     # TODO bottom left
+            #     if dist_bl > 200:
+            #         # in lag, find marker in top row that is closest to the current right-most marker
+            #         anchor1 = lower_lag[np.argmin(dist.cdist(np.array([bl_dst]), lower_lag, "euclidean")[0])]
+            #         # measure how far this marker is away from the right-most marker in the lag image
+            #         dist1 = dist.cdist(np.array([anchor1]), np.array([bl_lag]), "euclidean")[0][0]
+            #         # get distance between tr and br
+            #         dist2 = dist.cdist(np.array([br_lag]), np.array([tr_lag]), "euclidean")[0][0]
+            #         result = utils.Intersect2Circles(bl_dst, dist1, tl_dst, dist2)
+            #         try:
+            #             # identify the point, based on distance to a rough proxy
+            #             index = dist.cdist(np.array([[0, save_img.shape[0]]]), np.array(result),
+            #                                "euclidean").argmin()
+            #             result = result[index]
+            #             bl_inferred = np.asarray(result, dtype="int64").tolist()
+            #             # tr_inferred = [4400, 0]
+            #             dst += [bl_inferred]
+            #             src += [bl_ref.tolist()]
+            #         except (IndexError, ValueError):
+            #             pass
+
+            # # write rotated and translated key points to file for eventual later use
+            # dst = np.asarray(dst)
+            # data = {"x": dst[:, 0], "y": dst[:, 1]}
+            # df = pd.DataFrame(data)
+            # df.to_csv(f'{kpts_path}/{image_id}.txt', index=False)
+
+            # write warped key point coordinates to file for eventual later FINAL roi determination
+            src = np.asarray(src)
+            data = {"x": src[:, 0], "y": src[:, 1]}
+            df = pd.DataFrame(data)
+            df.to_csv(f'{kpts_path}/{image_id}.txt', index=False)
+
             # perspective Transform with the first image of the series as destination
-            tform = skimage.transform.ProjectiveTransform()
-            # tform = skimage.transform.PolynomialTransform()
-            # tform = skimage.transform.PiecewiseAffineTransform()
+            tform_projective = skimage.transform.ProjectiveTransform()  # acceptable, easy to apply
+            tform_polynomial = skimage.transform.PolynomialTransform()  # very bad
+            tform_piecewise = skimage.transform.PiecewiseAffineTransform()  # very good, but how to handle areas outside of the keypoints?
             try:
-                tform.estimate(src, dst)
+                tform_piecewise.estimate(src, dst)
+                tform_projective.estimate(src, dst)
+                tform_polynomial.estimate(src, dst)
             except ValueError:
                 print("could not derive transformation matrix")
                 f = open(f"{path_output}/unmatched.txt", 'a')
@@ -251,9 +409,44 @@ for l_series, i_series in zip(label_series, image_series):
                 f.close()
                 continue
 
-            warped = skimage.transform.warp(save_img, tform, output_shape=(init_roi_height, roi_widths[0]))
-            warped = skimage.util.img_as_ubyte(warped)
-            cv2.imwrite(f'{result_path}/{image_id}.JPG', cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
+            # Piecewise Affine
+            # Save the object to a file
+            with open(f'{roi_path}/{image_id}_tform_piecewise.pkl', 'wb') as file:
+                pickle.dump(tform_piecewise, file)
+            file.close()
+            piecewise_warped = skimage.transform.warp(save_img, tform_piecewise, output_shape=(init_roi_height, roi_widths[0]))
+            piecewise_warped = skimage.util.img_as_ubyte(piecewise_warped)
+            cv2.imwrite(f'{result_pw}/{image_id}.JPG', cv2.cvtColor(piecewise_warped, cv2.COLOR_BGR2RGB))
+            # plt.imshow(piecewise_warped)
+
+            # for p in src:
+            #     cv2.circle(piecewise_warped, (p[0], p[1]), radius=15, color=(0, 0, 255), thickness=2)
+
+            # # Load the object from a file
+            # with open(f'{roi_path}/{image_id}_tform_piecewise.pkl', 'rb') as file:
+            #     tform_piecewise = pickle.load(file)
+            # transformed_points = tform_piecewise(np.array(src)).astype("uint64")
+            # transformed_points = tform_piecewise.inverse(np.array(dst)).astype("uint64")
+
+            # Projective
+            roi_loc['transformation_matrix'] = tform_projective.params.tolist()
+            projective_warped = skimage.transform.warp(save_img, tform_projective, output_shape=(init_roi_height, roi_widths[0]))
+            projective_warped = skimage.util.img_as_ubyte(projective_warped)
+            cv2.imwrite(f'{result_proj}/{image_id}.JPG', cv2.cvtColor(projective_warped, cv2.COLOR_BGR2RGB))
+
+            # polynomial
+            roi_loc['transformation_matrix'] = tform_polynomial.params.tolist()
+            polynomial_warped = skimage.transform.warp(save_img, tform_polynomial, output_shape=(init_roi_height, roi_widths[0]))
+            polynomial_warped = skimage.util.img_as_ubyte(polynomial_warped)
+            cv2.imwrite(f'{result_poly}/{image_id}.JPG', cv2.cvtColor(projective_warped, cv2.COLOR_BGR2RGB))
+
+            # fig, axs = plt.subplots(1, 2, sharex=True, sharey=True)
+            # axs[0].imshow(piecewise_warped)
+            # axs[0].set_title('leaf')
+            # axs[1].imshow(projective_warped)
+            # axs[1].set_title('warped')
+            # plt.show(block=True)
+
             # if os.path.getsize(f'{result_path}/{image_id}.JPG') < 700:
             #     print("could not derive transformation matrix")
             #     f = open(f"{path_output}/unmatched.txt", 'a')
@@ -262,8 +455,13 @@ for l_series, i_series in zip(label_series, image_series):
 
             del size_outliers
 
-            # add transformation matrix to the roi localization info
-            roi_loc['transformation_matrix'] = tform.params.tolist()
+            # # add transformation matrix to the roi localization info
+            # roi_loc['transformation_matrix'] = tform.params.tolist()
 
         with open(f'{roi_path}/{image_id}.json', 'w') as outfile:
             json.dump(roi_loc, outfile)
+
+
+# reconstruct single images for evaluation
+
+images = glob.glob(f'{result_pw}/*.JPG')
