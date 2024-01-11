@@ -33,11 +33,11 @@ path_images = f'{workdir}/*/result/piecewise'
 path_aligned_masks = f'{workdir}/*/mask_aligned/piecewise'
 path_kpts = f'{workdir}/*/keypoints/'
 
-frames = glob.glob(f'{path_aligned_masks}/*0020_1.png')
-images = glob.glob(f'{path_images}/*0020_1.JPG')
+frames = glob.glob(f'{path_aligned_masks}/*0020_7.png')
+images = glob.glob(f'{path_images}/*0020_7.JPG')
 num_frames = len(frames)
 
-out_path = 'Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output/ESWW0070020_1'
+out_path = 'Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output/ESWW0070020_7'
 
 # make output dirs
 
@@ -48,7 +48,7 @@ for d in dirs:
 
 # Process each frame in the time series
 # for frame_number in range(1, num_frames + 1):
-for frame_number in range(1, 9):
+for frame_number in range(1, 7):
 
     print("processing frame " + os.path.basename(frames[frame_number-1]))
 
@@ -122,6 +122,13 @@ for frame_number in range(1, 9):
     # ==================================================================================================================
     # 2. Watershed segmentation for object separation
     # ==================================================================================================================
+
+    # fig, axs = plt.subplots(1, 2, sharex=True, sharey=True)
+    # axs[0].imshow(frame)
+    # axs[0].set_title('original')
+    # axs[1].imshow(seg)
+    # axs[1].set_title('transformed')
+    # plt.show(block=True)
 
     if frame_number == 1:
         seg = frame

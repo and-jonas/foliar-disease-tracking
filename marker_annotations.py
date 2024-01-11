@@ -9,7 +9,7 @@ import glob
 import os
 
 # load annotation file
-with open('Z:/Public/Jonas/Data/ESWW007/CvatDatasets/Markers/Set4/annotations.xml', 'r') as f:
+with open('Z:/Public/Jonas/Data/ESWW007/CvatDatasets/Markers/Set5/annotations.xml', 'r') as f:
     data = f.read()
 
 # Passing the stored data inside
@@ -20,7 +20,7 @@ Bs_data = BeautifulSoup(data, "xml")
 b_unique = Bs_data.find_all('image')
 
 # get list of all image names
-image_names = glob.glob('Z:/Public/Jonas/Data/ESWW007/CvatDatasets/Markers/Set4/Images/*.JPG')
+image_names = glob.glob('Z:/Public/Jonas/Data/ESWW007/CvatDatasets/Markers/Set5/Images/*.JPG')
 image_names = [os.path.basename(x) for x in image_names]
 
 # iterate over all annotated images
@@ -49,7 +49,7 @@ for image_name in image_names:
     # create output .txt file
     df = pd.DataFrame(data=result)
     txt_name = image_name.replace(".JPG", ".txt")
-    df.to_csv(f"Z:/Public/Jonas/Data/ESWW007/CvatDatasets/Markers/Set4/{txt_name}",
+    df.to_csv(f"Z:/Public/Jonas/Data/ESWW007/CvatDatasets/Markers/Set5/{txt_name}",
               sep=" ",
               index=False,
               header=False)
@@ -85,7 +85,7 @@ lst_key = ["validation"] * len(validation_images) +["train"] * len(train_images)
 imgs = validation_images + train_images
 labs = validation_labels + train_labels
 
-data_to = "Z:/Public/Jonas/Data/ESWW007/CvatDatasets/Markers/datasets/markers"
+# data_to = "Z:/Public/Jonas/Data/ESWW007/CvatDatasets/Markers/datasets/markers"
 data_to = "C:/Users/anjonas/PycharmProjects/STBLeaf/datasets/markers"
 
 # copy images and masks
@@ -96,7 +96,7 @@ Path(f'{data_to}/labels/train').mkdir(exist_ok=True, parents=True)
 for i in range(len(lst_key)):
     print(i)
     base_name = os.path.basename(imgs[i])
-    # shutil.copy(imgs[i], f'{data_to}/images/{lst_key[i]}/{base_name.replace(".JPG", ".jpg")}')
+    shutil.copy(imgs[i], f'{data_to}/images/{lst_key[i]}/{base_name.replace(".JPG", ".jpg")}')
     shutil.copy(labs[i], f'{data_to}/labels/{lst_key[i]}/{base_name.replace(".JPG", ".txt")}')
 
 

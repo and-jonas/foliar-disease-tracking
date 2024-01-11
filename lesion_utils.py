@@ -462,7 +462,15 @@ def get_object_watershed_labels(current_mask, markers):
 
 
 def complement_mask(leaf_mask, seg, seg_lag, kpts):
-
+    """
+    Checks if a part of the leaf is missing due to undetected or lost markers. If a part of the leaf is missing,
+    complements the current segmentation mask with objects from the preceding mask in the areas of interest.
+    :param leaf_mask: the current leaf mask
+    :param seg: the current segmentation mask
+    :param seg_lag: the preceding segmentation mask
+    :param kpts: the detected key points (marker coordinates)
+    :return: the complemented segmentation mask
+    """
     # sort the points based on their x-coordinates
     kpts = np.array(kpts)
     upper = kpts[kpts[:, 1] < 300]

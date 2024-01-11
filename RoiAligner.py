@@ -11,8 +11,8 @@ import pandas as pd
 import pickle
 import cv2
 from PIL import Image
-# import matplotlib
-# import matplotlib.pyplot as plt
+import matplotlib
+import matplotlib.pyplot as plt
 import utils
 import glob
 import os
@@ -43,6 +43,28 @@ class RoiAligner:
         with open(f"{self.path_output}/unmatched_piecewise.txt", 'w') as file:
             pass
 
+    def get_output_paths(self, label_series, create_dirs):
+        """
+        Creates all required output paths and makes the corresponding directories
+        :param label_series: The series to process
+        :param create_dirs: Wether or not to create directories
+        :return: All required paths
+        """
+        sample_id = "_".join(os.path.basename(label_series).split("_")[2:4]).replace(".txt", "")
+        # generate output paths for each sample and create directories
+        sample_output_path = self.path_output / sample_id
+        kpts_path = sample_output_path / "keypoints"
+        overlay_path = sample_output_path / "overlay"
+        roi_path = sample_output_path / "roi"
+        result_path = sample_output_path / "result"
+        result_pw = result_path / "piecewise"
+        result_proj = result_path / "projective"
+        preview_path = sample_output_path / "preview"
+        if create_dirs:
+            for p in (kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path):
+                p.mkdir(parents=True, exist_ok=True)
+        return kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path
+
     def log_fail(self, image_id, type):
         f = open(f"{self.path_output}/unmatched_{type}.txt", 'a')
         f.writelines(image_id + "\n")
@@ -65,8 +87,6 @@ class RoiAligner:
 
         if len(images) != len(labels):
             raise Exception("list of images and list of coordinate files are not of equal length.")
-            # warnings.warn("list of images and list of coordinate files are not of equal length."
-            #               "Ignoring extra coordinate files.")
 
         print("found " + str(len(uniques)) + " unique sample names")
 
@@ -81,7 +101,7 @@ class RoiAligner:
             label_series.append(sample_labels)
             image_series.append(sample_image_names)
 
-        return label_series[:10], image_series[:10]
+        return label_series, image_series
 
     def process_series(self, work_queue, result):
         """
@@ -102,23 +122,12 @@ class RoiAligner:
             # iterate over all samples in the series
             roi_widths = []
             for j in range(len(l_series)):
+            # for j in range(8):
 
+                # prepare sample work space
                 image_id = os.path.basename(l_series[j]).replace(".txt", "")
-                sample_id = "_".join(os.path.basename(l_series[j]).split("_")[2:4]).replace(".txt", "")
-
-                print(str(sample_id) + ": image " + str(j))
-
-                # generate output paths for each sample and create directories
-                sample_output_path = self.path_output / sample_id
-                kpts_path = sample_output_path / "keypoints"
-                overlay_path = sample_output_path / "overlay"
-                roi_path = sample_output_path / "roi"
-                result_path = sample_output_path / "result"
-                result_pw = result_path / "piecewise"
-                result_proj = result_path / "projective"
-                preview_path = sample_output_path / "preview"
-                for p in (kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path):
-                    p.mkdir(parents=True, exist_ok=True)
+                out_paths = self.get_output_paths(label_series=l_series[j], create_dirs=True)
+                kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path = out_paths
 
                 # get key point coordinates from YOLO output
                 coords = pd.read_table(l_series[j], header=None, sep=" ")
@@ -130,18 +139,12 @@ class RoiAligner:
                 img = np.array(img)
 
                 # remove double detections
-                point_list = np.array([[a, b] for a, b in zip(x, y)], dtype=np.int32)
-                dmat = dist.cdist(point_list, point_list, "euclidean")
-                np.fill_diagonal(dmat, np.nan)
-                dbl_idx = np.where(dmat < 75)[0].tolist()[::2]
-                point_list = np.delete(point_list, dbl_idx, axis=0)
-                x = np.delete(x, dbl_idx, axis=0)
-                y = np.delete(y, dbl_idx, axis=0)
+                point_list, x, y = utils.remove_double_detections(x=x, y=y)
 
                 # remove outliers in the key point detections from YOLO errors,
                 # get minimum area rectangle around retained key points
                 outliers_x = utils.reject_outliers(x, m=3.)  # larger extension, larger variation
-                outliers_y = utils.reject_outliers(y, m=2.)  # smaller extension, smaller variation
+                outliers_y = utils.reject_outliers(y, m=2.5)  # smaller extension, smaller variation
                 outliers = outliers_x + outliers_y
                 point_list = np.delete(point_list, outliers, 0)
                 rect = cv2.minAreaRect(point_list)
@@ -162,19 +165,14 @@ class RoiAligner:
                 pts = np.intp(cv2.transform(np.array([box]), M_box))[0]
                 pts[pts < 0] = 0
 
-                # order bounding box points clockwise
+                # order bbox points clockwise
                 pts = utils.order_points(pts)
 
                 # record roi localization
                 roi_loc = {'rotation_matrix': M_img.tolist(), 'bounding_box': pts.tolist()}
 
                 # draw key points and bounding box on overlay image as check
-                overlay = copy.copy(img)
-                for point in point_list:
-                    cv2.circle(overlay, (point[0], point[1]), radius=15, color=(0, 0, 255), thickness=9)
-                box_ = np.intp(box)
-                cv2.drawContours(overlay, [box_], 0, (255, 0, 0), 9)
-                overlay = cv2.resize(overlay, (0, 0), fx=0.25, fy=0.25)
+                overlay = utils.make_bbox_overlay(img, point_list, box)
                 cv2.imwrite(f'{overlay_path}/{image_id}.JPG', cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
 
                 # pts = utils.expand_bbox_to_image_edge(pts, img=img_rot)
@@ -182,10 +180,11 @@ class RoiAligner:
                 # crop the roi from the rotated image
                 img_crop = img_rot[pts[0][1]:pts[2][1], pts[0][0]:pts[1][0]]
 
-                thumbnail = cv2.resize(img_crop, (0, 0), fx=0.2, fy=0.2)
-                cv2.imwrite(f'{preview_path}/{image_id}.JPG', cv2.cvtColor(thumbnail, cv2.COLOR_BGR2RGB))
+                # export a preview
+                preview = cv2.resize(img_crop, (0, 0), fx=0.2, fy=0.2)
+                cv2.imwrite(f'{preview_path}/{image_id}.JPG', cv2.cvtColor(preview, cv2.COLOR_BGR2RGB))
 
-                # log the width of the roi to detect outliers in series
+                # log roi width to detect outliers in series
                 roi_widths.append(img_crop.shape[1])
                 if j == 0:
                     init_roi_height = img_crop.shape[0]
@@ -196,7 +195,7 @@ class RoiAligner:
                     if size_outliers:
                         del roi_widths[-1]
 
-                # copy for later use
+                # copy image for later use
                 save_img = copy.copy(img_crop)
 
                 # rotate and translate key point coordinates
@@ -213,24 +212,26 @@ class RoiAligner:
                 kpts = np.intp(cv2.transform(np.array([kpts]), translation_matrix))[0]
 
                 # match all images in the series to the first image where possible
+                # For the first image of each series, no further processing is needed
                 if j == 0:
                     kpts_ref = kpts
                     cv2.imwrite(f'{result_pw}/{image_id}.JPG', cv2.cvtColor(save_img, cv2.COLOR_BGR2RGB))
                     cv2.imwrite(f'{result_proj}/{image_id}.JPG', cv2.cvtColor(save_img, cv2.COLOR_BGR2RGB))
+                # For all subsequent images, perform image registration with the first image as target
                 elif j > 0:
                     # match key points with those on the first image of the series
                     # by searching for the closest points
                     # if non is found in proximity, eliminate from both images
-                    src, dst = utils.find_keypoint_matches(kpts, kpts, kpts_ref, dist_limit=125)
+                    src, dst = utils.find_keypoint_matches(kpts, kpts, kpts_ref, dist_limit=175)
 
-                    # if there are few matches, or if there is a different size from the expected,
+                    # if there are few matches, or if there is a different roi size from the expected,
                     # there is likely a translation due to key point detection errors
-                    # try to fix by matching with the previous image in the series using SIFT features
+                    # try to match with the previous image in the series using SIFT + RANSAC
                     if len(src) < 12 or size_outliers:
-                        # if len(src) < 12:
-                        #     print("Key point mis-match. Matching on last image in series.")
-                        # if size_outliers:
-                        #     print("Size outlier detected. Matching on last image in series.")
+                        if len(src) < 12:
+                            print("Key point mis-match. Matching on last image in series.")
+                        if size_outliers:
+                            print("Size outlier detected. Matching on last image in series.")
                         try:
                             prev_image_id = os.path.basename(l_series[j - 1]).replace(".txt", "")
                             previous_image = Image.open(f'{result_proj}/{prev_image_id}.JPG')
@@ -259,6 +260,10 @@ class RoiAligner:
                                 images=[copy.copy(previous_image), copy.copy(current_image)],
                                 masks=[None, None],
                                 showMatches=True)
+
+                        # imageio.imwrite(
+                        # "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf/temp/example.png", vis
+                        # )
                         except TypeError:
                             self.log_fail(image_id, type="projective")
                             continue
@@ -298,7 +303,7 @@ class RoiAligner:
                         continue
 
                     # Piecewise Affine
-                    # Save the object to a file
+                    # Save the object
                     with open(f'{roi_path}/{image_id}_tform_piecewise.pkl', 'wb') as file:
                         pickle.dump(tform_piecewise, file)
                     file.close()

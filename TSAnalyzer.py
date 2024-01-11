@@ -121,6 +121,8 @@ class TSAnalyzer:
             # Process each frame in the time series
             for frame_number in range(1, num_frames + 1):
 
+                # print("--" + str(frame_number))
+
                 png_name = os.path.basename(m_series[frame_number - 1])
                 data_name = png_name.replace(".png", ".txt")
                 sample_name = png_name.replace(".png", "")
@@ -140,6 +142,7 @@ class TSAnalyzer:
                     kpts_fn = glob.glob(str(self.path_kpts / txt_name))[0]
                     kpts0 = pd.read_csv(kpts_fn)
                     kpts = utils.make_point_list(np.asarray(kpts0))
+                    # at least 6 kpts must be identified, else skip the frame
 
                 # get leaf mask (without insect damage!)
                 mask_leaf = np.where((frame_ >= 41) & (frame_ != 153), 1, 0).astype("uint8")
@@ -209,8 +212,12 @@ class TSAnalyzer:
                 seg = seg * leaf_mask
 
                 if frame_number > 2:
-                    seg = lesion_utils.complement_mask(leaf_mask=leaf_mask, seg_lag=seg_lag, seg=seg, kpts=kpts0)
-
+                    try:
+                        seg = lesion_utils.complement_mask(leaf_mask=leaf_mask, seg_lag=seg_lag, seg=seg, kpts=kpts0)
+                    # if this fails, reset seg to seg_lag and skip the current frame
+                    except IndexError:
+                        seg = seg_lag
+                        continue
                 # ==================================================================================================================
                 # 3. Identify and add undetected lesions from previous frame
                 # ==================================================================================================================
@@ -308,7 +315,7 @@ class TSAnalyzer:
                     prof, out_checker, spl, spl_points = lesion_utils.spline_contours(
                         mask_obj=roi,
                         mask_all=empty_mask_all,
-                        mask_leaf=mask_leaf,
+                        mask_leaf=leaf_checker,
                         img=empty_img,
                         checker=checker
                     )

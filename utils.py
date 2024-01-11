@@ -12,6 +12,7 @@ from scipy.spatial.distance import cdist
 from PIL import Image
 import skimage
 from scipy.ndimage import map_coordinates
+import copy
 # import matplotlib
 # import matplotlib.pyplot as plt
 # matplotlib.use('Qt5Agg')
@@ -45,6 +46,33 @@ def reject_size_outliers(data, max_diff):
     else:
         idx = []
     return idx
+
+
+def remove_double_detections(x, y):
+    """
+    Removes one of two coordinate pairs if theIR distance is below 75
+    :param x:
+    :param y:
+    :return:
+    """
+    point_list = np.array([[a, b] for a, b in zip(x, y)], dtype=np.int32)
+    dist_mat = dist.cdist(point_list, point_list, "euclidean")
+    np.fill_diagonal(dist_mat, np.nan)
+    dbl_idx = np.where(dist_mat < 50)[0].tolist()[::2]
+    point_list = np.delete(point_list, dbl_idx, axis=0)
+    x = np.delete(x, dbl_idx, axis=0)
+    y = np.delete(y, dbl_idx, axis=0)
+    return point_list, x, y
+
+
+def make_bbox_overlay(img, point_list, box):
+    overlay = copy.copy(img)
+    for point in point_list:
+        cv2.circle(overlay, (point[0], point[1]), radius=15, color=(0, 0, 255), thickness=9)
+    box_ = np.intp(box)
+    cv2.drawContours(overlay, [box_], 0, (255, 0, 0), 9)
+    overlay = cv2.resize(overlay, (0, 0), fx=0.25, fy=0.25)
+    return overlay
 
 
 def warp_point(x: int, y: int, M) -> [int, int]:
