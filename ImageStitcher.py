@@ -2,7 +2,6 @@
 
 # This code was slightly modified from https://pyimagesearch.com/2018/12/17/image-stitching-with-opencv-and-python/
 
-
 # import the necessary packages
 import numpy as np
 import imutils

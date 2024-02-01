@@ -15,10 +15,11 @@ import copy
 import skimage
 import pickle
 from scipy.spatial import distance as dist
-from Test import Stitcher
+from ImageStitcher import Stitcher
 import warnings
 matplotlib.use('Qt5Agg')
 
+from datetime import datetime
 
 overlays = glob.glob('Z:/Public/Jonas/011_STB_leaf_tracking/output/ts/ESWW0070020_1/overlay/*.png')
 orig_images = glob.glob('Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output/ESWW0070020_1/result/projective/*.JPG')
@@ -44,9 +45,25 @@ for gi in guessing_images:
     img = Image.open(gi)
     img = np.array(img)
     bn = os.path.basename(gi)
+    dt = bn[0:15]
+    datetime_object = datetime.strptime(dt, '%Y%m%d_%H%M%S')
 
     # crop
-    crop = img[0:500, 2000:3000]
+    crop = img[0:300, 2200:2800]
+
+    # add date time to image
+    crop = cv2.putText(crop, str(datetime_object), org=(20, 275),  fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                          fontScale=0.9, color=(255, 255, 255), thickness=2)
+
+    # add grid to image
+    grid_y = list(range(0, crop.shape[0], 50))
+    for g_y in grid_y:
+        cv2.line(crop, (0, g_y), (crop.shape[1], g_y), (0, 0, 255), 1, 1)
+    grid_x = list(range(0, crop.shape[1], 100))
+    for g_x in grid_x:
+        cv2.line(crop, (g_x, 0), (g_x, crop.shape[0]), (0, 0, 255), 1, 1)
+
+    plt.imshow(crop)
 
     imageio.imwrite(f"Z:/Public/Jonas/011_STB_leaf_tracking/Figures/guessing_images/{bn}", crop)
 

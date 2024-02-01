@@ -9,7 +9,7 @@ import json
 import imageio
 
 # import matplotlib
-# import matplotlib.pyplot as plt
+# import matplotlib.pyplot as pltpy
 # matplotlib.use('Qt5Agg')
 
 import multiprocessing
@@ -17,7 +17,7 @@ import multiprocessing
 
 dir_img = "/home/anjonas/public/Public/Radek/01_Data/A_Eschikon_Field_Experiments/single_leaves_jonas"
 dir_meta = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
-masks = glob.glob("Z/home/anjonas/public/Public/Jonas/011_STB_leaf_tracking/data/single_leaves_jonas_export/predictions/*.png")
+masks = glob.glob("/home/anjonas/public/Public/Jonas/011_STB_leaf_tracking/data/single_leaves_jonas_export/predictions/*.png")
 
 
 # Define a function to process each mask

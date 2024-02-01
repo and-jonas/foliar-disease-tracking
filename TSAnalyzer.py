@@ -17,6 +17,7 @@ from scipy.spatial.distance import cdist
 from scipy import ndimage as ndi
 from multiprocessing import Manager, Process
 from matplotlib import path
+import time
 
 # import matplotlib
 # import matplotlib.pyplot as plt
@@ -87,7 +88,7 @@ class TSAnalyzer:
             mask_series.append(sample_masks)
             image_series.append(sample_image_names)
 
-        return mask_series, image_series
+        return mask_series[310:], image_series[310:]
 
     def process_series(self, work_queue, result):
         """
@@ -121,8 +122,9 @@ class TSAnalyzer:
             # Process each frame in the time series
             for frame_number in range(1, num_frames + 1):
 
-                # print("--" + str(frame_number))
+                print("--" + str(frame_number))
 
+                # get sample identifiers
                 png_name = os.path.basename(m_series[frame_number - 1])
                 data_name = png_name.replace(".png", ".txt")
                 sample_name = png_name.replace(".png", "")
@@ -135,14 +137,13 @@ class TSAnalyzer:
                 # Load the multi-class segmentation mask
                 frame_ = cv2.imread(m_series[frame_number - 1], cv2.IMREAD_GRAYSCALE)
 
-                # load key point coordinates
+                # get coordinates of white marks ("key points")
                 if frame_number == 1:
                     kpts = [(0, 0), (frame_.shape[1], 0), (frame_.shape[1], frame_.shape[0]), (0, frame_.shape[0])]
                 else:
                     kpts_fn = glob.glob(str(self.path_kpts / txt_name))[0]
                     kpts0 = pd.read_csv(kpts_fn)
                     kpts = utils.make_point_list(np.asarray(kpts0))
-                    # at least 6 kpts must be identified, else skip the frame
 
                 # get leaf mask (without insect damage!)
                 mask_leaf = np.where((frame_ >= 41) & (frame_ != 153), 1, 0).astype("uint8")
@@ -184,11 +185,10 @@ class TSAnalyzer:
                 leaf_mask = np.swapaxes(leaf_mask.reshape(frame.shape[1], frame.shape[0]), 0, 1)
                 leaf_mask = np.where(leaf_mask, 1, 0).astype("uint8")
                 leaf_mask = cv2.morphologyEx(leaf_mask, cv2.MORPH_DILATE, kernel, iterations=2)
-                # leaf_mask = np.where(leaf_mask, leaf_mask, np.nan)
 
                 # reduce to roi delimited by the key points
                 leaf_checker = mask_leaf * leaf_mask
-                cv2.imwrite(f'{out_paths[5]}/{png_name}', leaf_checker)
+                # cv2.imwrite(f'{out_paths[5]}/{png_name}', leaf_checker)
 
                 # ==================================================================================================================
                 # 3. Watershed segmentation for object separation
@@ -218,6 +218,7 @@ class TSAnalyzer:
                     except IndexError:
                         seg = seg_lag
                         continue
+
                 # ==================================================================================================================
                 # 3. Identify and add undetected lesions from previous frame
                 # ==================================================================================================================
@@ -247,7 +248,7 @@ class TSAnalyzer:
 
                 # generate complete watershed markers
                 _, markers, _, _ = cv2.connectedComponentsWithStats(seg, connectivity=8)
-                cv2.imwrite(f'{out_paths[4]}/{png_name}', seg)
+                # cv2.imwrite(f'{out_paths[4]}/{png_name}', seg)
 
                 # ==================================================================================================================
                 # 4. Analyze each lesion: label and extract data
@@ -258,34 +259,45 @@ class TSAnalyzer:
 
                 # if not lesions are found, the original image without overlay is saved
                 if len(contours) < 1:
-                    imageio.imwrite(f'{out_paths[1]}/{png_name}', img)
+                    # imageio.imwrite(f'{out_paths[1]}/{png_name}', img)
                     continue
 
                 # Process each detected object in the current frame
                 checker = copy.copy(img)
                 lesion_data = []
+
+                # prepare distance map
+                # slow operation, therefore perform once for the entire inverted mask
+                mask_invert = np.bitwise_not(seg)
+                distance_invert = ndi.distance_transform_edt(mask_invert)
+
                 for idx, contour in enumerate(contours):
 
+                    # print("----" + str(idx))
+
+                    # get the roi
                     x, y, w, h = map(int, cv2.boundingRect(contour))
                     objects[idx] = (x, y, w, h)
                     rect = cv2.boundingRect(contour)
-
-                    # Shrink bounding box
-                    w_ = int(w * 0.5)
-                    h_ = int(h * 0.2)
-                    x_ = int(x + (w - w_) / 2)
-                    y_ = int(y + (h - h_) / 2)
-
                     roi = lesion_utils.select_roi_2(rect=rect, mask=seg)
 
+                    # check if is on the leaf
                     in_leaf_checker = np.unique(leaf_mask[np.where(roi)[0], np.where(roi)[1]])[0]
 
+                    # check if is a new object by comparing with each previously identified object
                     is_new_object = True
                     for lag_label, (lag_x, lag_y, lag_w, lag_h) in labels.items():
 
+                        # print("------" + str(lag_label))
+
+                        # get the mask of the lag object in context
                         rect_lag = (lag_x, lag_y, lag_w, lag_h)
 
-                        # get the ask of the lag object in context
+                        # skip check if rectangles do not overlap
+                        if not utils.rectangles_overlap(rect, rect_lag):
+                            continue
+
+                        # if rectangles do overlap, perform more detailed check
                         roi_lag = lesion_utils.select_roi_2(rect=rect_lag, mask=seg_lag)
 
                         # get areas and overlap
@@ -293,23 +305,25 @@ class TSAnalyzer:
                         int_area = np.sum(np.logical_and(roi, roi_lag))
                         contour_overlap = int_area / lag_area
 
+                        # if overlaps, then it is not a new lesion but an already tracked one
+                        # --> add corresponding label and terminate search
                         if contour_overlap >= 0.2:  # <==CRITICAL=======================================================
                             is_new_object = False
                             object_matches[lag_label] = (x, y, w, h)
                             current_label = lag_label  # Update the label to the existing object's label
                             break
 
-                    # If the object is not significantly overlapped with any previous object, assign a new label
+                    # If the object is not sufficiently overlapped with any previous object, assign a new label
                     if is_new_object:
                         object_matches[next_label] = (x, y, w, h)
                         current_label = next_label  # Update the label to the newly assigned label
                         next_label += 1
 
-                    # change format of the bounding rectangle
+                    # modify dimensions of the bounding rectangle
                     rect = lesion_utils.get_bounding_boxes(rect=rect)
 
                     # extract roi
-                    empty_mask_all, _, empty_img, ctr_obj = lesion_utils.select_roi(rect=rect, img=img, mask=seg)
+                    empty_mask_all, empty_img, ctr_obj = lesion_utils.select_roi(rect=rect, img=img, mask=seg)
 
                     # extract RGB profile, checker image, spline normals, and spline base points
                     prof, out_checker, spl, spl_points = lesion_utils.spline_contours(
@@ -317,15 +331,17 @@ class TSAnalyzer:
                         mask_all=empty_mask_all,
                         mask_leaf=leaf_checker,
                         img=empty_img,
-                        checker=checker
+                        checker=checker,
+                        distance_invert=distance_invert,
                     )
 
-                    # extract perimeter lengths
+                    # extract lesion data
                     if len(spl[0]) != 0 and in_leaf_checker != 0:
                         # extract perimeter lengths
                         analyzable_perimeter = len(spl[1]) / len(spl[0])
-                        edge_perimeter = len(spl[3]) / len(spl[0])
-                        neigh_perimeter = len(spl[2]) / len(spl[0])
+                        occluded_perimeter = len(spl[2]) / len(spl[0])
+                        # edge_perimeter = len(spl[3]) / len(spl[0])
+                        # neigh_perimeter = len(spl[2]) / len(spl[0])
 
                         # extract other lesion properties
                         # these are extracted from the original (un-smoothed) contour
@@ -346,8 +362,9 @@ class TSAnalyzer:
                                             'perimeter': contour_perimeter,
                                             'solidity': contour_solidity,
                                             'analyzable_perimeter': analyzable_perimeter,
-                                            'edge_perimeter': edge_perimeter,
-                                            'neigh_perimeter': neigh_perimeter,
+                                            'occluded_perimeter': occluded_perimeter,
+                                            # 'edge_perimeter': edge_perimeter,
+                                            # 'neigh_perimeter': neigh_perimeter,
                                             'max_width': w,
                                             'max_height': h,
                                             'n_pycn': n_pycn})
@@ -436,26 +453,25 @@ class TSAnalyzer:
                 # ==================================================================================================================
 
                 # save lesion data
-                result = pd.DataFrame(lesion_data, columns=lesion_data[0].keys())
-                result.to_csv(f'{out_paths[2]}/{data_name}', index=False)
+                df = pd.DataFrame(lesion_data, columns=lesion_data[0].keys())
+                df.to_csv(f'{out_paths[2]}/{data_name}', index=False)
 
                 # Draw and save the labeled objects on the frame
                 frame_with_labels = cv2.cvtColor(seg, cv2.COLOR_GRAY2BGR)
                 image_with_labels = copy.copy(out_checker)
                 for label, (x, y, w, h) in labels.items():
                     cv2.rectangle(frame_with_labels, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                    cv2.putText(frame_with_labels, str(label), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0),
-                                2)
+                    cv2.putText(frame_with_labels, str(label), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
                     cv2.rectangle(image_with_labels, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                    cv2.putText(image_with_labels, str(label), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255),
-                                2)
-                cv2.imwrite(f'{out_paths[0]}/{png_name}', frame_with_labels)
+                    cv2.putText(image_with_labels, str(label), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                # cv2.imwrite(f'{out_paths[0]}/{png_name}', frame_with_labels)
                 imageio.imwrite(f'{out_paths[1]}/{png_name}', image_with_labels)
 
-            # ==================================================================================================================
+            result.put(series_id)
+
+    # ==================================================================================================================
 
     def process_all(self):
-
         self.prepare_workspace()
         mask_series, image_series = self.get_series()
 
@@ -490,9 +506,10 @@ class TSAnalyzer:
 
             # Get results and increment counter along with it
             while count < max_jobs:
-                img_names = results.get()
+                series_name = results.get()
                 count += 1
-                print("processed " + str(count) + "/" + str(max_jobs))
+                print("processed " + str(count) + "/" + str(max_jobs) + ": " + str(series_name))
 
             for p in processes:
                 p.join()
+                print(f"Process {series_name} finished.")

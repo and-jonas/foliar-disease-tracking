@@ -5,18 +5,37 @@
 
 import numpy as np
 import cv2
-import math
 from scipy.spatial import KDTree
 from scipy.spatial import distance as dist
-from scipy.spatial.distance import cdist
+from sklearn.cluster import KMeans
 from PIL import Image
 import skimage
-from scipy.ndimage import map_coordinates
 import copy
+from scipy.spatial.distance import euclidean
 # import matplotlib
 # import matplotlib.pyplot as plt
 # matplotlib.use('Qt5Agg')
 
+
+def make_point_list_(input):
+    """
+    Transform cv2 format to ordinary list of 2D points
+    :param input: the point list in cv2 format or as a 2d array
+    :return: list of point coordinates
+    """
+    xs = []
+    ys = []
+    for point in range(len(input)):
+        x = input[point][0]
+        y = input[point][1]
+        xs.append(x)
+        ys.append(y)
+    point_list = []
+    for a, b in zip(xs, ys):
+        point_list.append([a, b])
+    c = point_list
+
+    return c
 
 def reject_outliers(data, m=2.):
     """
@@ -30,6 +49,54 @@ def reject_outliers(data, m=2.):
     s = d / mdev if mdev else np.zeros(len(d))
     idx = np.where(s > m)[0].tolist()
     return idx
+
+
+# split top and bottom marks via clustering
+def sort_and_filter_points(data, m):
+    """
+    Separates top and bottom points and performs filtering within each group based on y-coordinates
+    :param data: the y-coordinates of all detected key-points in an image
+    :param m: the number of sds to tolerate
+    :return: the separated top and bottom keypoints, cleaned from outliers
+    """
+
+    # cluster into two groups (top and bottom row) based on y-coordinates
+    ys = [x[1] for x in data]
+    X = np.array(ys)
+    X = X.reshape(-1, 1)
+    kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
+    kmeans.fit(X)
+    labels = kmeans.labels_
+    bottom_idx = [i for i, lab in enumerate(labels) if lab == 0]
+    bottom_y = data[bottom_idx, 1]
+
+    # identify outliers in top and bottom row
+    bottom_outliers = reject_outliers(data=bottom_y, m=m)
+    bottom_idx_clean = np.delete(bottom_idx, bottom_outliers, 0)
+    top_idx = [i for i, lab in enumerate(labels) if lab == 1]
+    top_y = data[top_idx, 1]
+    top_outliers = reject_outliers(data=top_y, m=m)
+    top_idx_clean = np.delete(top_idx, top_outliers, 0)
+
+    # clean by removing detected outliers
+    kpts_bottom = data[bottom_idx_clean, :]
+    kpts_top = data[top_idx_clean, :]
+
+    # sort from left to right
+    kpts_bottom = kpts_bottom[np.argsort(kpts_bottom[:, 0]), :]
+    kpts_top = kpts_top[np.argsort(kpts_top[:, 0]), :]
+
+    return kpts_top, kpts_bottom
+
+
+def pairwise_distances(points1, points2):
+    distances = []
+
+    for p1, p2 in zip(points1, points2):
+        distance = p1[0] - p2[0]
+        distances.append(distance)
+
+    return distances
 
 
 def reject_size_outliers(data, max_diff):
@@ -50,7 +117,7 @@ def reject_size_outliers(data, max_diff):
 
 def remove_double_detections(x, y):
     """
-    Removes one of two coordinate pairs if theIR distance is below 75
+    Removes one of two coordinate pairs if their distance is below 50
     :param x:
     :param y:
     :return:
@@ -66,6 +133,13 @@ def remove_double_detections(x, y):
 
 
 def make_bbox_overlay(img, point_list, box):
+    """
+    Creates an overlay on the original image that shows the detected marks and the fitted bounding box
+    :param img: original image
+    :param point_list: list of coordinate [x,y] coordinate pairs denoting the detected mark positions
+    :param box: the box coordinates in cv2 format
+    :return:
+    """
     overlay = copy.copy(img)
     for point in point_list:
         cv2.circle(overlay, (point[0], point[1]), radius=15, color=(0, 0, 255), thickness=9)
@@ -73,6 +147,24 @@ def make_bbox_overlay(img, point_list, box):
     cv2.drawContours(overlay, [box_], 0, (255, 0, 0), 9)
     overlay = cv2.resize(overlay, (0, 0), fx=0.25, fy=0.25)
     return overlay
+
+
+def make_inference_crop(pts, img,):
+    # Calculate the centroid
+    mw, mh = np.mean(pts, axis=0)
+
+    # Crop According to the centroid
+    h_min = int(mh) - int(2048 / 2)
+
+    if h_min < 0:
+        print("Bounding Box outside of the image")
+
+    if h_min + 2048 >= len(img):
+        print("Bounding Box outside of the image")
+
+    img_cropped = img[h_min:h_min + 2048, :, :]
+
+    return img_cropped
 
 
 def warp_point(x: int, y: int, M) -> [int, int]:
@@ -112,7 +204,7 @@ def remove_points_from_mask(mask, points):
 def rotate_translate_warp_points(points, rot, box, mat_proj, mat_pw, target_shape):
     """
     rotates, translates, and warps point coordinates to match the transformed mask.
-    Fitlters detected point lying outside the roi.
+    Filters detected point lying outside the roi.
     :param points: a list of 2D points
     :param rot: rotation matrix applied to the msak
     :param box: the corner coordinates of the bounding box used to crop he roi from the image
@@ -159,7 +251,13 @@ def rotate_translate_warp_points(points, rot, box, mat_proj, mat_pw, target_shap
 
 
 def add_points_to_mask(mask, pycn_trf, rust_trf):
-
+    """
+    Adds the transformed detected pycnidia and rust pustules to the transformed mask
+    :param mask: transformed mask without pycnidia and rust
+    :param pycn_trf: transformed coordinates of the pycnidia
+    :param rust_trf: transformed coordinates of the rust pustules
+    :return: the complemented transformed mask
+    """
     # add points again
     try:
         mask[pycn_trf[:, 1], pycn_trf[:, 0]] = 4  # pycnidia
@@ -178,7 +276,14 @@ def add_points_to_mask(mask, pycn_trf, rust_trf):
 
 
 def find_keypoint_matches(current, current_orig, ref, dist_limit=150):
-
+    """
+    Finds pairs of matching detected marks on two subsequent images of a series
+    :param current: the current image to be aligned to the initial image
+    :param current_orig: the initial image of the series
+    :param ref:
+    :param dist_limit: the maximum allowed distance between points to consider them the same point
+    :return:
+    """
     # MAKE AND QUERY TREE
     tree = KDTree(current)
     assoc = []
@@ -203,25 +308,55 @@ def find_keypoint_matches(current, current_orig, ref, dist_limit=150):
     return src, dst
 
 
-def getComponents(normalised_homography):
-  '''((translationx, translationy), rotation, (scalex, scaley), shear)'''
-  a = normalised_homography[0,0]
-  b = normalised_homography[0,1]
-  c = normalised_homography[0,2]
-  d = normalised_homography[1,0]
-  e = normalised_homography[1,1]
-  f = normalised_homography[1,2]
+def check_keypoint_matches(src, dst, mdev, m):
+    """
+    Verifies that the kd-tree identified associations are meaningful by comparing the distance between source and target
+    across the top and bottom rows. Regular patterns are expected, and outliers from this pattern are removed.
+    If no stable pattern is found, all associations are deleted.
+    :param src: source point coordinates
+    :param dst: destination point coordinates
+    :param mdev: average deviation from mean that is tolerated for associations
+    :param m: parameter for outlier removal
+    :return: cleaned lists of source and destination points
+    """
 
-  p = math.sqrt(a*a + b*b)
-  r = (a*e - b*d)/(p)
-  q = (a*d+b*e)/(a*e - b*d)
+    if len(src) < 7:
+        src, dst = [], []
+    else:
+        # separate bottom and top row points, and order
+        src_t, src_b = sort_and_filter_points(data=np.array(src), m=m)
+        dst_t, dst_b = sort_and_filter_points(data=np.array(dst), m=m)
+        src = np.vstack([src_t, src_b])
+        dst = np.vstack([dst_t, dst_b])
 
-  translation = (c,f)
-  scale = (p,r)
-  shear = q
-  theta = math.atan2(b,a)
+        # broadly check for a regular pattern, if none is found delete all associations
+        # otherwise, remove outlier associations
+        distances = pairwise_distances(src, dst)
+        d = np.abs(distances - np.mean(distances))
+        m_dev = np.mean(d)
+        if m_dev > mdev:
+           src, dst = [], []
+        else:
+            # calculate distances and identify outliers
+            distances = pairwise_distances(src, dst)
+            top_distances = distances[:len(src_t)]
+            bottom_distances = distances[len(src_t):]
+            outliers_top = reject_outliers(data=top_distances, m=m)
+            outliers_bottom = reject_outliers(data=bottom_distances, m=m)
 
-  return translation, theta, scale, shear
+            # delete outliers via their list indices
+            src_t = np.delete(src_t, outliers_top, 0)
+            src_b = np.delete(src_b, outliers_bottom, 0)
+            dst_t = np.delete(dst_t, outliers_top, 0)
+            dst_b = np.delete(dst_b, outliers_bottom, 0)
+
+            # assemble filtered point lists
+            src = np.vstack([src_t, src_b])
+            dst = np.vstack([dst_t, dst_b])
+            src = make_point_list_(src)
+            dst = make_point_list_(dst)
+
+    return src, dst
 
 
 def order_points(pts):
@@ -231,24 +366,20 @@ def order_points(pts):
     :return: the coordinates of the top-left, top-right, bottom-right, and bottom-left points
     """
     # sort the points based on their x-coordinates
-    xSorted = pts[np.argsort(pts[:, 0]), :]
-
-    # grab the left-most and right-most points from the sorted
-    # x-roodinate points
-    leftMost = xSorted[:2, :]
-    rightMost = xSorted[-2:, :]
-    # now, sort the left-most coordinates according to their
-    # y-coordinates so we can grab the top-left and bottom-left
-    # points, respectively
-    leftMost = leftMost[np.argsort(leftMost[:, 1]), :]
+    x_sorted = pts[np.argsort(pts[:, 0]), :]
+    # grab the left-most and right-most points
+    left_most = x_sorted[:2, :]
+    right_most = x_sorted[-2:, :]
+    # sort the left-most coordinates according to their
+    # y-coordinates, to grab the top-left and bottom-left points
+    leftMost = left_most[np.argsort(left_most[:, 1]), :]
     (tl, bl) = leftMost
-    # now that we have the top-left coordinate, use it as an
-    # anchor to calculate the Euclidean distance between the
+    # use tl as anchor to calculate the Euclidean distance between the
     # top-left and right-most points; by the Pythagorean
     # theorem, the point with the largest distance will be
     # our bottom-right point
-    D = dist.cdist(tl[np.newaxis], rightMost, "euclidean")[0]
-    (br, tr) = rightMost[np.argsort(D)[::-1], :]
+    D = dist.cdist(tl[np.newaxis], right_most, "euclidean")[0]
+    (br, tr) = right_most[np.argsort(D)[::-1], :]
     return np.array([tl, tr, br, bl], dtype="int")
 
 
@@ -286,44 +417,6 @@ def make_point_list(input):
         point_list.append(tuple([a, b]))
     c = point_list
 
-    return c
-
-
-def make_point_list_(input):
-    """
-    Transform cv2 format to ordinary point list
-    :param input:
-    :return: list of point coordinates
-    """
-    xs = []
-    ys = []
-    for point in range(len(input)):
-        x = input[point][0]
-        y = input[point][1]
-        xs.append(x)
-        ys.append(y)
-    point_list = []
-    for a, b in zip(xs, ys):
-        point_list.append([a, b])
-    c = point_list
-
-    return c
-
-
-def flatten_centroid_data(input, asarray):
-    xs = []
-    ys = []
-    for point in input:
-        x = point[0]
-        y = point[1]
-        xs.append(x)
-        ys.append(y)
-    point_list = []
-    for a, b in zip(xs, ys):
-        point_list.append([a, b])
-        c = point_list
-    if asarray:
-        c = np.asarray(point_list)
     return c
 
 
@@ -370,146 +463,6 @@ def make_cv2_formatted(array):
     return sm_contour
 
 
-def sort_counterclockwise(points, start, centre=None):
-    if centre:
-        centre_x, centre_y = centre
-    else:
-        centre_x, centre_y = sum([x for x, _ in points]) / len(points), sum([y for _, y in points]) / len(points)
-    angles = [math.atan2(y - centre_y, x - centre_x) for x, y in points]
-    vector = [(x-centre_x, y-centre_y) for x, y in points]
-    # Length of vector: ||v||
-    lenvector = [math.hypot(x, y) for x, y in vector]
-    indices = np.argsort(angles)
-    angles = [angles[i] for i in indices]
-    lengths = [lenvector[i] for i in indices]
-    counterclockwise_points = [points[i] for i in indices]
-    pp = np.stack(counterclockwise_points)
-    start_index = [any(ele == start) for ele in pp]
-    start_index = np.where(start_index)[0][0]
-    final = counterclockwise_points[start_index:] + counterclockwise_points[:start_index]
-    angles = angles[start_index:] + angles[:start_index]
-    lengths = lengths[start_index:] + lengths[:start_index]
-    return indices, angles, lengths, final
-
-
-def find_top_left(pts):
-    # identify all left-most points
-    sorted = pts[pts[:, 0].argsort()]
-    diffs_x = np.diff(sorted, axis=0)[:, 0]
-    index = np.min(np.where(diffs_x > 150))
-    left_points = sorted[:index+1, :]
-    ind_tl = np.argsort(left_points[:, 1])[0]
-    top_left = sorted[ind_tl]
-    # identify all right-most points
-    sorted_inv = sorted[::-1]
-    diffs_x = np.diff(sorted_inv, axis=0)[:, 0]
-    index = np.min(np.where(diffs_x < -150))
-    right_points = sorted_inv[:index+1, :]
-    ind_tr = np.argsort(right_points[:, 1])[0]
-    top_right = sorted_inv[ind_tr]
-
-    return top_left, top_right
-
-
-def distance(P1, P2):
-    return ((P1[0] - P2[0])**2 + (3*(P1[1] - P2[1]))**2) ** 0.5
-
-
-def optimized_path(coords, start=None):
-    if start is None:
-        start = coords[0]
-    pass_by = coords
-    path = [start]
-    pass_by.remove(start)
-    while pass_by:
-        nearest = min(pass_by, key=lambda x: distance(path[-1], x))
-        path.append(nearest)
-        pass_by.remove(nearest)
-    return path
-
-
-def find_marker_centroids(image, size_th, coordinates, leaf_mask):
-    """
-    Filter objects in a binary mask by size
-    :param mask: A binary mask to filter
-    :param size_th: The size threshold used to filter (objects GREATER than the threshold will be kept)
-    :return: A binary mask containing only objects greater than the specified threshold
-    """
-
-    # threshold
-    lower = np.array([140, 140, 140])  # v changed successively from 35 to 30 to 22 for selected images
-    upper = np.array([255, 255, 255])
-    mask = cv2.inRange(image, lower, upper)
-    mask = cv2.medianBlur(mask, 15)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))
-    mask = cv2.dilate(mask, kernel)
-    # remove everything outside the leaf
-    mask = np.bitwise_and(mask, leaf_mask)
-    # detect and filter based on size
-    _, output, stats, ctr = cv2.connectedComponentsWithStats(mask, connectivity=4)
-    sizes = stats[1:, -1]
-    idx = (np.where(sizes > size_th)[0] + 1).tolist()
-    out = np.in1d(output, idx).reshape(output.shape)
-    out = np.where(out, 255, 0).astype("uint8")
-    # detect and filter based overlap with local maxima
-    _, output, stats, ctr = cv2.connectedComponentsWithStats(out, connectivity=4)
-    keep = [output[p[0], p[1]] for p in coordinates]
-    keep = np.unique(keep)
-    keep = np.delete(keep, np.where(keep == 0))
-    mask2 = np.in1d(output, keep).reshape(output.shape)
-    mask2 = np.where(mask2, 255, 0).astype("uint8")
-    _, output, stats, ctr = cv2.connectedComponentsWithStats(mask2, connectivity=4)
-    ctr = ctr[1:]
-    ctr = ctr.astype("int")
-
-    upper_left, _ = find_top_left(pts=ctr)
-
-    list_ = make_point_list_(ctr)
-    path = optimized_path(coords=list_, start=[upper_left[0], upper_left[1]])
-
-    # indices, angles, lengths, sorted_ = sort_counterclockwise(list_, start=upper_left)
-    # diffs = np.diff(lengths).astype("int")
-    # diffdiff = np.diff(diffs)
-    #
-    # errors = np.where(np.absolute(diffdiff) > 3*np.mean(np.absolute(diffdiff)))
-    #
-    # errors = np.concatenate(errors).tolist()
-    # errors = [e+1 for e in errors]
-    # for e in errors:
-    #     if np.absolute(angles[e] - angles[e+1]) < 0.05:
-    #         sorted_[e], sorted_[e+1] = sorted_[e+1], sorted_[e]
-    #         lengths[e], lengths[e+1] = lengths[e+1], lengths[e]
-    #         diffs = np.diff(lengths).astype("int")
-    #         diffdiff = np.diff(diffs)
-    #     if any(diffdiff) > 3*np.mean(np.absolute(diffdiff)):
-    #         continue
-    #     else:
-    #         break
-
-    # ctr_reord = np.stack([ctr[i] for i in indices], axis=0)
-    ctr_reord = path
-
-    # ctr = ctr.astype("int")
-    cleaned = np.zeros_like(mask)
-    cleaned = np.where(output == 0, cleaned, 255)
-    for i, point in enumerate(path):
-        # cv2.putText(cleaned,
-        #             fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-        #             org=point,
-        #             text=str(i),
-        #             thickness=5,
-        #             fontScale=3,
-        #             color=122)
-        cv2.putText(image,
-                    fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                    org=point,
-                    text=str(i),
-                    thickness=5,
-                    fontScale=3,
-                    color=(255, 0, 0))
-    return cleaned, ctr_reord, image
-
-
 def filter_objects_size(mask, size_th, dir):
     """
     Filter objects in a binary mask by size
@@ -527,21 +480,6 @@ def filter_objects_size(mask, size_th, dir):
     cleaned = np.where(out, 0, mask)
 
     return cleaned
-
-
-def keep_central_object(mask):
-    """
-    Filter objects in a binary mask by centroid position
-    :param mask: A binary mask to filter
-    :return: A binary mask containing only the central object (by centroid position)
-    """
-    n_comps, output, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    ctr_img = centroids[0:1]
-    dist = cdist(centroids[1:], ctr_img)
-    min_idx = np.argmin(dist)
-    lesion_mask = np.uint8(np.where(output == min_idx + 1, 255, 0))
-
-    return lesion_mask
 
 
 def is_multi_channel_img(img):
@@ -576,83 +514,13 @@ def make_overlay(patch, mask, colors=[(1, 0, 0, 0.25)]):
     return overlay
 
 
-def interpolate_transformed_image_rgb(image, tform, output_shape):
+def rectangles_overlap(rect1, rect2):
+    x1, y1, w1, h1 = rect1
+    x2, y2, w2, h2 = rect2
 
-    # Generate grid of coordinates for the output image
-    grid_x, grid_y = np.meshgrid(np.arange(output_shape[0]), np.arange(output_shape[1]))
-    output_coords = np.vstack([grid_x.ravel(), grid_y.ravel()])
-
-    # Apply the inverse transform to get coordinates in the original image space
-    src_coords = tform.inverse(output_coords.T).T
-
-    # Perform interpolation using map_coordinates for each channel
-    channels = [map_coordinates(image[:, :, i], src_coords, order=3, mode='constant').reshape(output_shape) for i in range(image.shape[2])]
-
-    # Stack the channels to form the RGB image
-    return np.stack(channels, axis=-1)
-
-
-def Intersect2Circles(A, a, B, b):
-    # A, B = [x, y]
-    # return = [Q1, Q2] or [Q] or [] where Q = [x, y]
-    AB0 = B[0] - A[0]
-    AB1 = B[1] - A[1]
-    c = math.sqrt(AB0 * AB0 + AB1 * AB1)
-
-    if c == 0:
-        # no distance between centers
-        return []
-
-    x = (a * a + c * c - b * b) / (2 * c)
-    y = a * a - x * x
-
-    if y < 0:
-        # no intersection
-        return []
-
-    if y > 0:
-        y = math.sqrt(y)
-
-    # compute unit vectors ex and ey
-    ex0 = AB0 / c
-    ex1 = AB1 / c
-    ey0 = -ex1
-    ey1 = ex0
-
-    Q1x = A[0] + x * ex0
-    Q1y = A[1] + x * ex1
-
-    if y == 0:
-        # one touch point
-        return [[Q1x, Q1y]]
-
-    # two intersections
-    Q2x = Q1x - y * ey0
-    Q2y = Q1y - y * ey1
-    Q1x += y * ey0
-    Q1y += y * ey1
-
-    return [[Q1x, Q1y], [Q2x, Q2y]]
-
-
-def get_corners(pts):
-
-    upper = pts[pts[:, 1] < 300]
-    lower = pts[pts[:, 1] > 300]
-
-    # sort the points based on their x-coordinates
-    upper_x_sort = upper[np.argsort(upper[:, 0]), :]
-    lower_x_sort = lower[np.argsort(lower[:, 0]), :]
-
-    # grab the left-most and right-most points from the sorted
-    # x-roodinate points
-    upper_left = upper_x_sort[:1, :][0]
-    upper_right = upper_x_sort[-1:, :][0]
-    lower_left = lower_x_sort[:1, :][0]
-    lower_right = lower_x_sort[-1:, :][0]
-
-    return np.array([upper_left, upper_right, lower_left, lower_right], dtype="int")
-
-
-
+    # Check for no overlap in any direction
+    if x1 + w1 < x2 or x2 + w2 < x1 or y1 + h1 < y2 or y2 + h2 < y1:
+        return False
+    else:
+        return True
 

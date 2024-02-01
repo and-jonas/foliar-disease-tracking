@@ -1,14 +1,11 @@
 
 import math
 import scipy.interpolate as si
-from scipy.spatial.distance import cdist
 from skimage.draw import line
 import cv2
 import numpy as np
-import copy
 import utils
 from scipy import ndimage as ndi
-import imutils
 from skimage.segmentation import watershed
 from matplotlib import path
 
@@ -62,21 +59,6 @@ def get_bounding_boxes(rect):
     return coords
 
 
-def keep_central_object(mask):
-    """
-    Filter objects in a binary mask by centroid position
-    :param mask: A binary mask to filter
-    :return: A binary mask containing only the central object (by centroid position)
-    """
-    n_comps, output, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    ctr_img = centroids[0:1]
-    dist = cdist(centroids[1:], ctr_img)
-    min_idx = np.argmin(dist)
-    lesion_mask = np.uint8(np.where(output == min_idx + 1, 255, 0))
-
-    return lesion_mask
-
-
 def select_roi(rect, img, mask):
     """
     Selects part of an image defined by bounding box coordinates. The selected patch is pasted onto empty masks for
@@ -97,8 +79,6 @@ def select_roi(rect, img, mask):
     # filter out the central object (i.e. lesion of interest)
     # isolate the rectangle
     patch_mask_all = mask[y:y + h, x:x + w]
-    # # remove objects that touch on the border
-    # patch_mask_obj = reject_borders(patch_mask_all)
 
     # select object by size or by centroid position in the patch
     n_comps, output, stats, centroids = cv2.connectedComponentsWithStats(patch_mask_all, connectivity=8)
@@ -121,9 +101,8 @@ def select_roi(rect, img, mask):
     empty_mask_all[y:y + h, x:x + w] = patch_mask_all
 
     mask_all = empty_mask_all.astype("uint8")
-    mask = empty_mask.astype("uint8")
 
-    return mask_all, mask, empty_img, ctr_obj
+    return mask_all, empty_img, ctr_obj
 
 
 def select_roi_2(rect, mask):
@@ -343,19 +322,20 @@ def spline_approx_contour(contour, sf=0.25):
         # evaluate  B-spline
         u_new = np.linspace(u.min(), u.max(), int(len(contour_points)))
         y_new, x_new = si.splev(u_new, tck, der=0)
+        # thin
+        # y_new = y_new[0::thin]
+        # x_new = x_new[0::thin]
     except (ValueError, TypeError) as error:
         print(error)
         x_new, y_new = ([], [])
     return x_new, y_new
 
 
-def spline_contours(mask_obj, mask_all, mask_leaf, img, checker):
+def spline_contours(mask_obj, mask_all, mask_leaf, img, checker, distance_invert):
     """
     Wrapper function for processing of contours via spline normals
     :param mask_leaf: a binary mask with 255 for leaf and 0 for background
     :param mask_obj: a binary mask containing only the lesion of interest.
-    !!IMPORTANT!!: This must be in uint8 (i.e. 0 and 255), otherwise ndi.distance_transform_edt() produces nonsense
-    output !!
     :param mask_all: a binary mask containing all the segmented objects in the patch
     :param img: the original patch image
     :param checker: A copy of the (full) image to process.
@@ -366,6 +346,7 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker):
     contour, _ = cv2.findContours(mask_obj, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
     # get spline points and smoothed contour
+
     spline_points = spline_approx_contour(contour, sf=0.25)
 
     # if the spline approximation was successful, process normally
@@ -380,50 +361,50 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker):
         # sample normals on image and on false object mask
         color_profiles = extract_normals_pixel_values(img=img, normals=spl_n)
 
-        # sample normals on distance maps
-        mask_invert = np.bitwise_not(mask_obj)
-        distance_invert = ndi.distance_transform_edt(mask_invert)
+        # # sample normals on distance maps
+        # mask_invert = np.bitwise_not(mask_obj)
+        # distance_invert = ndi.distance_transform_edt(mask_invert)
         dist_profiles_outer = extract_normals_pixel_values(img=distance_invert, normals=spl_n)
 
         # sample normals on leaf masks
         leaf_profiles = extract_normals_pixel_values(img=mask_leaf, normals=spl_n)
 
         # remove normals that extend into lesion
-        checked_profiles, spl_n_full, spl_n_red = check_color_profiles(
+        final_profiles, spl_n_full, spl_n_red = check_color_profiles(
             color_profiles=color_profiles,
             dist_profiles_outer=dist_profiles_outer,
             leaf_profiles=leaf_profiles,
             spline_normals=spl_n,
         )
 
-        # remove normals extending into neighbor lesions
-        if not spl_n == spl_n_red:
-            mask_all_invert = np.bitwise_not(mask_all)
-            distance_invert_all = ndi.distance_transform_edt(mask_all_invert)
-            dist_profiles_multi = extract_normals_pixel_values(img=distance_invert_all, normals=spl_n_full)
-            final_profiles, spl_n_full_l, spl_n_red_l = remove_neighbor_lesions(
-                checked_profiles=checked_profiles,
-                dist_profiles_multi=dist_profiles_multi,
-                spl_n_clean=spl_n_full,
-            )
-        else:
-            final_profiles, spl_n_full_l, spl_n_red_l = None, [], []
+        # # remove normals extending into neighbor lesions
+        # if not spl_n == spl_n_red:
+        #     mask_all_invert = np.bitwise_not(mask_all)
+        #     distance_invert_all = ndi.distance_transform_edt(mask_all_invert)
+        #     dist_profiles_multi = extract_normals_pixel_values(img=distance_invert_all, normals=spl_n_full)
+        #     final_profiles, spl_n_full_l, spl_n_red_l = remove_neighbor_lesions(
+        #         checked_profiles=checked_profiles,
+        #         dist_profiles_multi=dist_profiles_multi,
+        #         spl_n_clean=spl_n_full,
+        #     )
+        # else:
+        #     final_profiles, spl_n_full_l, spl_n_red_l = None, [], []
     else:
         spl_n = []
         spl_n_full = []
         sm_contour = []
-        final_profiles, spl_n_full_l, spl_n_red, spl_n_red_l = None, [], [], []
+        final_profiles, spl_n_full, spl_n_red, = None, [], []
 
     # create the check image
     # add analyzable normals
     for i in range(len(spl_n_full)):
         cv2.drawContours(checker, spl_n_full[i], -1, (255, 0, 0), 1)
-    # add normals extending into neighboring lesions
-    if spl_n_red_l is not None:
-        for i in range(len(spl_n_red_l)):
-            cv2.drawContours(checker, spl_n_red_l[i], -1, (0, 255, 0), 1)
+    # # add normals extending into neighboring lesions
+    # if spl_n_red_l is not None:
+    #     for i in range(len(spl_n_red_l)):
+    #         cv2.drawContours(checker, spl_n_red_l[i], -1, (0, 255, 0), 1)
     # add normals on leaf edges or extending into the lesion itself
-    if spl_n_red_l is not None:
+    if spl_n_red is not None:
         for i in range(len(spl_n_red)):
             cv2.drawContours(checker, spl_n_red[i], -1, (0, 122, 0), 1)
     # add smoothed contour
@@ -431,7 +412,7 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker):
         for c in [sm_contour]:
             cv2.drawContours(checker, c, -1, (0, 0, 255), 1)
 
-    return final_profiles, checker, (spl_n, spl_n_full_l, spl_n_red_l, spl_n_red), spline_points
+    return final_profiles, checker, (spl_n, spl_n_full, spl_n_red), spline_points
 
 
 def get_object_watershed_labels(current_mask, markers):

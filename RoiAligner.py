@@ -4,25 +4,27 @@
 # ======================================================================================================================
 
 # import libraries
-from Test import Stitcher
+from ImageStitcher import Stitcher
 import numpy as np
 import json
 import pandas as pd
 import pickle
-import cv2
 from PIL import Image
-import matplotlib
-import matplotlib.pyplot as plt
 import utils
 import glob
 import os
 from pathlib import Path
 import copy
-import skimage
-from scipy.spatial import distance as dist
-from multiprocessing import Manager, Process
-import warnings
+
+# import matplotlib
+# import matplotlib.pyplot as plt
 # matplotlib.use('Qt5Agg')
+
+import skimage
+from skimage import transform
+
+import cv2
+from multiprocessing import Manager, Process
 
 
 class RoiAligner:
@@ -60,12 +62,18 @@ class RoiAligner:
         result_pw = result_path / "piecewise"
         result_proj = result_path / "projective"
         preview_path = sample_output_path / "preview"
+        crop_path = sample_output_path / "crop"
         if create_dirs:
-            for p in (kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path):
+            for p in (kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path, crop_path):
                 p.mkdir(parents=True, exist_ok=True)
-        return kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path
+        return kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path, crop_path
 
     def log_fail(self, image_id, type):
+        """
+        Writes the image id of failure casees to a txt file
+        :param image_id: if of the current image
+        :param type: the type of transformation attempted ("piecewise" of "projective")
+        """
         f = open(f"{self.path_output}/unmatched_{type}.txt", 'a')
         f.writelines(image_id + "\n")
         f.close()
@@ -122,12 +130,13 @@ class RoiAligner:
             # iterate over all samples in the series
             roi_widths = []
             for j in range(len(l_series)):
-            # for j in range(8):
 
                 # prepare sample work space
                 image_id = os.path.basename(l_series[j]).replace(".txt", "")
                 out_paths = self.get_output_paths(label_series=l_series[j], create_dirs=True)
-                kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path = out_paths
+                kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path, crop_path = out_paths
+
+                print(image_id)
 
                 # get key point coordinates from YOLO output
                 coords = pd.read_table(l_series[j], header=None, sep=" ")
@@ -147,14 +156,18 @@ class RoiAligner:
                 outliers_y = utils.reject_outliers(y, m=2.5)  # smaller extension, smaller variation
                 outliers = outliers_x + outliers_y
                 point_list = np.delete(point_list, outliers, 0)
+
+                # if too few points detected, skip
+                if len(point_list) < 7:
+                    print("Insufficient marks detected. Skipping. ")
+                    continue
+
                 rect = cv2.minAreaRect(point_list)
 
-                # TODO enlarge bounding box to capture additional lesions outside of the tagged range
+                # rotate the image about its center
                 (center, (w, h), angle) = rect
                 if angle > 45:
                     angle = angle - 90
-
-                # rotate the image about its center
                 rows, cols = img.shape[0], img.shape[1]
                 M_img = cv2.getRotationMatrix2D((cols / 2, rows / 2), angle, 1)
                 img_rot = cv2.warpAffine(img, M_img, (cols, rows))
@@ -171,11 +184,13 @@ class RoiAligner:
                 # record roi localization
                 roi_loc = {'rotation_matrix': M_img.tolist(), 'bounding_box': pts.tolist()}
 
+                # make crop to run inference on
+                img_cropped = utils.make_inference_crop(pts, img)
+                cv2.imwrite(f'{crop_path}/{image_id}.JPG', cv2.cvtColor(img_cropped, cv2.COLOR_BGR2RGB))
+
                 # draw key points and bounding box on overlay image as check
                 overlay = utils.make_bbox_overlay(img, point_list, box)
                 cv2.imwrite(f'{overlay_path}/{image_id}.JPG', cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
-
-                # pts = utils.expand_bbox_to_image_edge(pts, img=img_rot)
 
                 # crop the roi from the rotated image
                 img_crop = img_rot[pts[0][1]:pts[2][1], pts[0][0]:pts[1][0]]
@@ -191,7 +206,7 @@ class RoiAligner:
 
                 # detect size outliers and remove from the logged bbox width values
                 if j != 0:
-                    size_outliers = utils.reject_size_outliers(roi_widths, max_diff=100)
+                    size_outliers = utils.reject_size_outliers(roi_widths, max_diff=125)
                     if size_outliers:
                         del roi_widths[-1]
 
@@ -215,6 +230,7 @@ class RoiAligner:
                 # For the first image of each series, no further processing is needed
                 if j == 0:
                     kpts_ref = kpts
+                    # kpts_norm_ref = kpts_norm
                     cv2.imwrite(f'{result_pw}/{image_id}.JPG', cv2.cvtColor(save_img, cv2.COLOR_BGR2RGB))
                     cv2.imwrite(f'{result_proj}/{image_id}.JPG', cv2.cvtColor(save_img, cv2.COLOR_BGR2RGB))
                 # For all subsequent images, perform image registration with the first image as target
@@ -222,13 +238,18 @@ class RoiAligner:
                     # match key points with those on the first image of the series
                     # by searching for the closest points
                     # if non is found in proximity, eliminate from both images
-                    src, dst = utils.find_keypoint_matches(kpts, kpts, kpts_ref, dist_limit=175)
+                    src, dst = utils.find_keypoint_matches(kpts, kpts, kpts_ref, dist_limit=150)
+
+                    # verify that matches are spatially reasonable; remove outlier associations
+                    # if too few points detected, skip
+                    src, dst = utils.check_keypoint_matches(src=src, dst=dst, mdev=50, m=5)
 
                     # if there are few matches, or if there is a different roi size from the expected,
                     # there is likely a translation due to key point detection errors
                     # try to match with the previous image in the series using SIFT + RANSAC
-                    if len(src) < 12 or size_outliers:
-                        if len(src) < 12:
+                    match_thresh = int(0.9*len(kpts))
+                    if len(src) < match_thresh or size_outliers:
+                        if len(src) < match_thresh:
                             print("Key point mis-match. Matching on last image in series.")
                         if size_outliers:
                             print("Size outlier detected. Matching on last image in series.")
@@ -256,28 +277,24 @@ class RoiAligner:
                         # try stitching images using SIFT and RANSAC
                         stitcher = Stitcher()
                         try:
-                            (result, vis, H) = stitcher.stitch(
+                            result, vis, H = stitcher.stitch(
                                 images=[copy.copy(previous_image), copy.copy(current_image)],
                                 masks=[None, None],
-                                showMatches=True)
+                                showMatches=True,
+                            )
 
-                        # imageio.imwrite(
-                        # "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf/temp/example.png", vis
-                        # )
                         except TypeError:
                             self.log_fail(image_id, type="projective")
                             continue
 
-                        # warp image by applying the inverse of the homography matrix
-                        warped = cv2.warpPerspective(current_image, np.linalg.inv(H),
-                                                     (previous_image.shape[1], previous_image.shape[0]))
-                        warped = skimage.util.img_as_ubyte(warped)
-
                         # warp key points by applying the inverse of the homography matrix
                         kpts_warped = [utils.warp_point(x[0], x[1], np.linalg.inv(H)) for x in kpts]
 
-                        # try again to match key points with those on the first image of the series
-                        src, dst = utils.find_keypoint_matches(kpts_warped, kpts, kpts_ref, dist_limit=125)
+                        # search for matches with sufficient tolerance
+                        src, dst = utils.find_keypoint_matches(kpts_warped, kpts, kpts_ref, dist_limit=200)
+
+                        # verify that matches are spatially reasonable; remove outlier associations
+                        src, dst = utils.check_keypoint_matches(src=src, dst=dst, mdev=50, m=4)
 
                     # write warped key point coordinates to file for eventual later FINAL roi determination
                     try:
@@ -289,8 +306,8 @@ class RoiAligner:
                         pass
 
                     # Transform with the first image of the series as destination
-                    tform_projective = skimage.transform.ProjectiveTransform()  # acceptable, easy to apply
-                    tform_piecewise = skimage.transform.PiecewiseAffineTransform()  # very good, but how to handle areas outside of the keypoints?
+                    tform_projective = transform.ProjectiveTransform()
+                    tform_piecewise = transform.PiecewiseAffineTransform()
                     try:
                         tform_projective.estimate(src, dst)
                     except:
@@ -307,15 +324,10 @@ class RoiAligner:
                     with open(f'{roi_path}/{image_id}_tform_piecewise.pkl', 'wb') as file:
                         pickle.dump(tform_piecewise, file)
                     file.close()
-
-                    piecewise_warped = skimage.transform.warp(save_img, tform_piecewise,
-                                                              output_shape=(init_roi_height, roi_widths[0]))
+                    piecewise_warped = transform.warp(save_img, tform_piecewise,
+                                                      output_shape=(init_roi_height, roi_widths[0]))
                     piecewise_warped = skimage.util.img_as_ubyte(piecewise_warped)
                     cv2.imwrite(f'{result_pw}/{image_id}.JPG', cv2.cvtColor(piecewise_warped, cv2.COLOR_BGR2RGB))
-
-                    # # point transformation with the estimated tform_piecewise appears to work fine
-                    # transformed_points = tform_piecewise(np.array(src)).astype("uint64")
-                    # transformed_points = tform_piecewise.inverse(np.array(dst)).astype("uint64")
 
                     # Projective
                     roi_loc['transformation_matrix'] = tform_projective.params.tolist()
@@ -374,3 +386,4 @@ class RoiAligner:
 
             for p in processes:
                 p.join()
+
