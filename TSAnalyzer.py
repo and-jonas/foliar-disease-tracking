@@ -88,7 +88,7 @@ class TSAnalyzer:
             mask_series.append(sample_masks)
             image_series.append(sample_image_names)
 
-        return mask_series[310:], image_series[310:]
+        return mask_series, image_series
 
     def process_series(self, work_queue, result):
         """
@@ -281,7 +281,7 @@ class TSAnalyzer:
                     rect = cv2.boundingRect(contour)
                     roi = lesion_utils.select_roi_2(rect=rect, mask=seg)
 
-                    # check if is on the leaf
+                    # check if is fully on the imaged leaf
                     in_leaf_checker = np.unique(leaf_mask[np.where(roi)[0], np.where(roi)[1]])[0]
 
                     # check if is a new object by comparing with each previously identified object

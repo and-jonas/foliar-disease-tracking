@@ -109,7 +109,7 @@ class RoiAligner:
             label_series.append(sample_labels)
             image_series.append(sample_image_names)
 
-        return label_series, image_series
+        return label_series[376:], image_series[376:]
 
     def process_series(self, work_queue, result):
         """
@@ -131,6 +131,9 @@ class RoiAligner:
             roi_widths = []
             for j in range(len(l_series)):
 
+                if j == 3:
+                    print("stop")
+
                 # prepare sample work space
                 image_id = os.path.basename(l_series[j]).replace(".txt", "")
                 out_paths = self.get_output_paths(label_series=l_series[j], create_dirs=True)
@@ -151,17 +154,24 @@ class RoiAligner:
                 point_list, x, y = utils.remove_double_detections(x=x, y=y)
 
                 # remove outliers in the key point detections from YOLO errors,
-                # get minimum area rectangle around retained key points
-                outliers_x = utils.reject_outliers(x, m=3.)  # larger extension, larger variation
-                outliers_y = utils.reject_outliers(y, m=2.5)  # smaller extension, smaller variation
+                outliers_x = utils.reject_outliers(x, tol=None, m=3.)  # larger extension, larger variation
+                outliers_y = utils.reject_outliers(y, tol=None, m=2.5)  # smaller extension, smaller variation
                 outliers = outliers_x + outliers_y
                 point_list = np.delete(point_list, outliers, 0)
+
+                # remove outliers within rows
+                points_top, points_bottom, removed_outliers = utils.identify_outliers_2d(
+                    data=point_list,
+                    m=3,
+                )
+                point_list = np.vstack([points_top, points_bottom])
 
                 # if too few points detected, skip
                 if len(point_list) < 7:
                     print("Insufficient marks detected. Skipping. ")
                     continue
 
+                # get minimum area rectangle around retained key points
                 rect = cv2.minAreaRect(point_list)
 
                 # rotate the image about its center
@@ -189,7 +199,7 @@ class RoiAligner:
                 cv2.imwrite(f'{crop_path}/{image_id}.JPG', cv2.cvtColor(img_cropped, cv2.COLOR_BGR2RGB))
 
                 # draw key points and bounding box on overlay image as check
-                overlay = utils.make_bbox_overlay(img, point_list, box)
+                overlay = utils.make_bbox_overlay(img, points_top, points_bottom, box)
                 cv2.imwrite(f'{overlay_path}/{image_id}.JPG', cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
 
                 # crop the roi from the rotated image
@@ -238,11 +248,11 @@ class RoiAligner:
                     # match key points with those on the first image of the series
                     # by searching for the closest points
                     # if non is found in proximity, eliminate from both images
-                    src, dst = utils.find_keypoint_matches(kpts, kpts, kpts_ref, dist_limit=150)
+                    src, dst = utils.find_keypoint_matches(kpts, kpts, kpts_ref, dist_limit=250)
 
                     # verify that matches are spatially reasonable; remove outlier associations
                     # if too few points detected, skip
-                    src, dst = utils.check_keypoint_matches(src=src, dst=dst, mdev=50, m=5)
+                    src, dst = utils.check_keypoint_matches(src=src, dst=dst, mdev=50, tol=100, m=2.5)
 
                     # if there are few matches, or if there is a different roi size from the expected,
                     # there is likely a translation due to key point detection errors
@@ -294,7 +304,7 @@ class RoiAligner:
                         src, dst = utils.find_keypoint_matches(kpts_warped, kpts, kpts_ref, dist_limit=200)
 
                         # verify that matches are spatially reasonable; remove outlier associations
-                        src, dst = utils.check_keypoint_matches(src=src, dst=dst, mdev=50, m=4)
+                        src, dst = utils.check_keypoint_matches(src=src, dst=dst, mdev=None, tol=100, m=2.5)
 
                     # write warped key point coordinates to file for eventual later FINAL roi determination
                     try:

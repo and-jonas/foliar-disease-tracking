@@ -18,6 +18,7 @@ import os
 import json
 import utils
 import multiprocessing
+import datetime
 
 # import matplotlib
 # import matplotlib.pyplot as plt
@@ -28,15 +29,15 @@ import multiprocessing
 # # list all samples for which the transformation was successful
 # existing_output = glob.glob(f'{base_dir}/*/result/piecewise/*.JPG')
 # bnames = [os.path.basename(x).replace(".JPG", "") for x in existing_output]
-
-# list all paths to masks
+#
+# # list all paths to masks
 # masks = glob.glob(f'{base_dir}/*/mask/*.png')
-
+#
 # ======================================================================================================================
 
 
 # Process masks
-def transform_mask(path_to_mask):
+def transform_mask(path_to_mask, n_classes=6):
 
     print(path_to_mask)
 
@@ -67,13 +68,9 @@ def transform_mask(path_to_mask):
     data = json.load(f)
     rot = np.asarray(data['rotation_matrix'])
     bbox = np.asarray(data['bounding_box'])
-    box_ = np.intp(bbox)
+    box = np.intp(bbox)
 
     tform_piecewise = None
-    tform_projective = None
-    if "transformation_matrix" in [k for k in data.keys()]:
-        tform_projective = np.asarray(data['transformation_matrix'])
-    f.close()
     try:
         with open(f'{base_dir}/{leaf_name}/roi/{stem_name}_tform_piecewise.pkl', 'rb') as file:
             tform_piecewise = pickle.load(file)
@@ -82,101 +79,86 @@ def transform_mask(path_to_mask):
 
     # get image roi
     full_img = np.zeros((5464, 8192, 3)).astype("uint8")
-    mw, mh = map(int, np.mean(box_, axis=0))
+    mw, mh = map(int, np.mean(box, axis=0))
     full_img[mh-1024:mh+1024, :] = img
     rows, cols = full_img.shape[0], full_img.shape[1]
-    full_img_rot = cv2.warpAffine(full_img, rot, (cols, rows))
-    ll = full_img_rot[box_[0][1]:box_[2][1], box_[0][0]:box_[1][0]]
 
     # full mask
     full_mask = np.zeros((5464, 8192)).astype("uint8")
     full_mask[mh - 1024:mh + 1024, :] = mask
 
     # ==================================================================================================================
-
-    # get coordinates of pycnidia and rust pustules
-    pycn = np.where(full_mask == 5)
-    rust = np.where(full_mask == 6)
-
-    # remove points from the mask (would not be maintained during transformation)
-    full_mask = utils.remove_points_from_mask(mask=full_mask, points=pycn)
-    full_mask = utils.remove_points_from_mask(mask=full_mask, points=rust)
-
-    # rotate mask
-    full_mask_rot = cv2.warpAffine(full_mask, rot, (cols, rows))
-
-    # extract points
-    pycn_point_list = np.array([[a, b] for a, b in zip(pycn[1], pycn[0])], dtype=np.int32)
-    rust_point_list = np.array([[a, b] for a, b in zip(rust[1], rust[0])], dtype=np.int32)
-
-    # transform points and filter for roi
-    if len(pycn_point_list) != 0:
-        pycn_trf = utils.rotate_translate_warp_points(
-            points=pycn_point_list,
-            rot=rot, box=box_,
-            mat_proj=tform_projective, mat_pw=tform_piecewise,
-            target_shape=target.shape
-        )
-    else:
-        pycn_trf = [None, None]
-    if len(rust_point_list) != 0:
-        rust_trf = utils.rotate_translate_warp_points(
-            points=rust_point_list,
-            rot=rot, box=box_,
-            mat_proj=tform_projective, mat_pw=tform_piecewise,
-            target_shape=target.shape
-        )
-    else:
-        rust_trf = [None, None]
+    # Transform the mask
     # ==================================================================================================================
 
-    # shrink mask to actual roi
-    leaf_mask = full_mask_rot[box_[0][1]:box_[2][1], box_[0][0]:box_[1][0]]
+    # get rid of the points
+    segmentation_mask = utils.remove_points_from_mask(mask=full_mask, classes=[5, 6])
 
+    # rotate mask
+    segmentation_mask_rot = cv2.warpAffine(segmentation_mask, rot, (cols, rows))
+
+    # crop roi
+    roi = segmentation_mask_rot[box[0][1]:box[2][1], box[0][0]:box[1][0]]
+
+    # warp roi (except for the first image in the series)
+    tform = tform_piecewise
+    if tform is not None:
+        lm = np.stack([roi, roi, roi], axis=2)
+        warped = skimage.transform.warp(lm, tform, output_shape=target.shape)
+        warped = skimage.util.img_as_ubyte(warped[:, :, 0])
+    else:
+        warped = roi
+
+    # ==================================================================================================================
+    # Transform points, add to mask
+    # ==================================================================================================================
+
+    # warp points
+    if tform is not None:
+        complete = utils.rotate_translate_warp_points2(
+            mask=full_mask,
+            classes=[5, 6],
+            rot=rot,
+            box=box,
+            tf=tform,
+            target_shape=target.shape,
+            warped=warped,
+        )
+    else:
+        complete = warped
+
+    # ==================================================================================================================
+    # Output
+    # ==================================================================================================================
+
+    # transform to ease inspection
+    complete = (complete.astype("uint32")) * 255 / n_classes
+    complete = complete.astype("uint8")
+
+    # save
     out_dir = Path(f'{base_dir}/{leaf_name}/mask_aligned2/')
     out_dir_pw = out_dir / "piecewise"
-    out_dir_proj = out_dir / "projective"
-    for dir in [out_dir_pw, out_dir_proj]:
-        dir.mkdir(exist_ok=True, parents=True)
+    out_dir_pw.mkdir(exist_ok=True, parents=True)
+    mask_name = f'{out_dir_pw}/{base_name}'
+    imageio.imwrite(mask_name, complete)
 
-    # tform = [tform_projective, tform_piecewise]
-    tform = [tform_piecewise]
-    # out_dir = [out_dir_proj, out_dir_pw]
-    out_dir = [out_dir_pw]
 
-    for i, tf in enumerate(tform):
+# def run(path):
+#     try:
+#         transform_mask(path)
+#     except FileNotFoundError:
+#         print("file not found")
 
-        mask_name = f'{out_dir[i]}/{base_name}'
 
-        if tf is not None:
-
-            # warp mask
-            lm = np.stack([leaf_mask, leaf_mask, leaf_mask], axis=2)
-            warped_m = skimage.transform.warp(lm, tf, output_shape=target.shape)
-            warped_m = skimage.util.img_as_ubyte(warped_m[:, :, 0])
-
-            warped_m = utils.add_points_to_mask(
-                mask=warped_m,
-                pycn_trf=pycn_trf[i],
-                rust_trf=rust_trf[i]
-            )
-
-            imageio.imwrite(mask_name, warped_m)
-
-            # # warp image
-            # warped = skimage.transform.warp(ll, tf, output_shape=target.shape)
-            # warped = skimage.util.img_as_ubyte(warped)
-
-        else:
-
-            leaf_mask = utils.add_points_to_mask(
-                mask=leaf_mask,
-                pycn_trf=pycn_trf[i],
-                rust_trf=rust_trf[i]
-            )
-
-            imageio.imwrite(mask_name, leaf_mask)
-
+def files_newer_than(files, day, hour, mins):
+    delta = datetime.timedelta(days=day, hours=hour, minutes=mins)
+    now = datetime.datetime.now()
+    file_list = []
+    for a in files:
+        c_time = datetime.datetime.fromtimestamp(os.path.getctime(a))
+        if now - delta < c_time:
+            file_list.append(a)
+    return file_list
 
 # # ======================================================================================================================
 #
@@ -192,15 +174,16 @@ if __name__ == '__main__':
     base_dir = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
     masks = glob.glob(f'{base_dir}/*/mask2/*.png')
 
+    # only list files which have been successfully transformed
     existing_output = glob.glob(f'{base_dir}/*/result/piecewise/*.JPG')
-    processed = glob.glob(f'{base_dir}/*/mask_aligned2/piecewise/*.png')
+    # processed = glob.glob(f'{base_dir}/*/mask_aligned2/piecewise/*.png')
+    # proc = files_newer_than(processed, day=2, hour=0, mins=0)
     bnames = [os.path.basename(x).replace(".JPG", "") for x in existing_output]
-    pnames = [os.path.basename(x).replace(".png", "") for x in processed]
+    # pnames = [os.path.basename(x).replace(".png", "") for x in proc]
     masks = [m for m in masks if os.path.basename(m).replace(".png", "") in bnames]
-    masks = [m for m in masks if os.path.basename(m).replace(".png", "") not in pnames]
+    # masks = [m for m in masks if os.path.basename(m).replace(".png", "") not in pnames]
 
-    # num_processes = multiprocessing.cpu_count()  # Define the number of CPU cores
-    num_processes = 20
+    num_processes = 6
 
     print("processing " + str(len(masks)) + " samples")
 

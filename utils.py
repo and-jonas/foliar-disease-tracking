@@ -7,11 +7,10 @@ import numpy as np
 import cv2
 from scipy.spatial import KDTree
 from scipy.spatial import distance as dist
-from sklearn.cluster import KMeans
+from skimage.feature import peak_local_max
 from PIL import Image
 import skimage
 import copy
-from scipy.spatial.distance import euclidean
 # import matplotlib
 # import matplotlib.pyplot as plt
 # matplotlib.use('Qt5Agg')
@@ -37,22 +36,45 @@ def make_point_list_(input):
 
     return c
 
-def reject_outliers(data, m=2.):
+
+def reject_outliers(data, tol=None, m=2.):
     """
     Detects outliers in 1d and returns the list index of the outliers
     :param data: 1d array
-    :param m:
+    :param tol: a tolerance in absolute distance
+    :param m: number of sd s to tolerate
     :return: list index of outliers
     """
     d = np.abs(data - np.mean(data))
     mdev = np.mean(d)
     s = d / mdev if mdev else np.zeros(len(d))
-    idx = np.where(s > m)[0].tolist()
+    idx = np.where(s > m)[0].tolist()  # no difference available for first point - no changes
+    if tol is not None:
+        abs_diff = np.abs(np.diff(data))
+        abs_diff = np.append(abs_diff[0], abs_diff)
+        idx = [i for i in idx if abs_diff[i] > tol]  # remove outliers within the absolute tolerance
+
     return idx
 
 
+def separate_marks(pts):
+    # Use polynomial to separate top and bottom marks
+    coefficients = np.polyfit(pts[:, 0], pts[:, 1], deg=2)
+    y_predicted = np.polyval(coefficients, pts[:, 0])
+    residuals = pts[:, 1] - y_predicted
+
+    # Find top and bottom points, using the residuals
+    top_idx = np.where(residuals < 0)[0]
+    bottom_idx = np.where(residuals > 0)[0]
+
+    top = pts[top_idx]
+    bottom = pts[bottom_idx]
+
+    return top, bottom
+
+
 # split top and bottom marks via clustering
-def sort_and_filter_points(data, m):
+def identify_outliers_2d(data, m):
     """
     Separates top and bottom points and performs filtering within each group based on y-coordinates
     :param data: the y-coordinates of all detected key-points in an image
@@ -60,25 +82,26 @@ def sort_and_filter_points(data, m):
     :return: the separated top and bottom keypoints, cleaned from outliers
     """
 
-    # cluster into two groups (top and bottom row) based on y-coordinates
-    ys = [x[1] for x in data]
-    X = np.array(ys)
-    X = X.reshape(-1, 1)
-    kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
-    kmeans.fit(X)
-    labels = kmeans.labels_
-    bottom_idx = [i for i, lab in enumerate(labels) if lab == 0]
-    bottom_y = data[bottom_idx, 1]
+    # Use polynomial to separate top and bottom marks
+    coefficients = np.polyfit(data[:, 0], data[:, 1], deg=3)
+    y_predicted = np.polyval(coefficients, data[:, 0])
+    residuals = data[:, 1] - y_predicted
 
-    # identify outliers in top and bottom row
-    bottom_outliers = reject_outliers(data=bottom_y, m=m)
-    bottom_idx_clean = np.delete(bottom_idx, bottom_outliers, 0)
-    top_idx = [i for i, lab in enumerate(labels) if lab == 1]
+    # Find top and bottom points, using the residuals
+    top_idx = np.where(residuals < 0)[0]
+    bottom_idx = np.where(residuals > 0)[0]
+
+    # find top and bottom outliers
+    bottom_y = data[bottom_idx, 1]
+    bottom_outliers = reject_outliers(data=bottom_y, tol=None, m=m)
     top_y = data[top_idx, 1]
-    top_outliers = reject_outliers(data=top_y, m=m)
-    top_idx_clean = np.delete(top_idx, top_outliers, 0)
+    top_outliers = reject_outliers(data=top_y, tol=None, m=m)
+
+    outliers = top_outliers + bottom_outliers
 
     # clean by removing detected outliers
+    bottom_idx_clean = np.delete(bottom_idx, bottom_outliers, 0)
+    top_idx_clean = np.delete(top_idx, top_outliers, 0)
     kpts_bottom = data[bottom_idx_clean, :]
     kpts_top = data[top_idx_clean, :]
 
@@ -86,10 +109,17 @@ def sort_and_filter_points(data, m):
     kpts_bottom = kpts_bottom[np.argsort(kpts_bottom[:, 0]), :]
     kpts_top = kpts_top[np.argsort(kpts_top[:, 0]), :]
 
-    return kpts_top, kpts_bottom
+    return kpts_top, kpts_bottom, outliers
+
 
 
 def pairwise_distances(points1, points2):
+    """
+    Calculates the distances between pairs of associated points in x-axis (y-axis is ignored)
+    :param points1: 2d coordinates of points
+    :param points2: 2d coordinates of points
+    :return: distances for each pair of associated points
+    """
     distances = []
 
     for p1, p2 in zip(points1, points2):
@@ -132,7 +162,7 @@ def remove_double_detections(x, y):
     return point_list, x, y
 
 
-def make_bbox_overlay(img, point_list, box):
+def make_bbox_overlay(img, points_top, points_bottom, box):
     """
     Creates an overlay on the original image that shows the detected marks and the fitted bounding box
     :param img: original image
@@ -141,8 +171,10 @@ def make_bbox_overlay(img, point_list, box):
     :return:
     """
     overlay = copy.copy(img)
-    for point in point_list:
+    for point in points_top:
         cv2.circle(overlay, (point[0], point[1]), radius=15, color=(0, 0, 255), thickness=9)
+    for point in points_bottom:
+        cv2.circle(overlay, (point[0], point[1]), radius=15, color=(255, 255, 0), thickness=9)
     box_ = np.intp(box)
     cv2.drawContours(overlay, [box_], 0, (255, 0, 0), 9)
     overlay = cv2.resize(overlay, (0, 0), fx=0.25, fy=0.25)
@@ -183,7 +215,7 @@ def warp_point(x: int, y: int, M) -> [int, int]:
     ])
 
 
-def remove_points_from_mask(mask, points):
+def remove_points_from_mask(mask, classes):
     """
     Removes the predicted pycnidia and rust pustules from the mask. Replaces the relevant pixel values with the average
     of the surrounding pixels. Points need to be transformed separately and added again to the transformed mask.
@@ -191,13 +223,17 @@ def remove_points_from_mask(mask, points):
     :param points: to coordinates of the points to be removed
     :return: The "cleaned" mask
     """
-    y_points, x_points = points
-    for i in range(len(y_points)):
-        row, col = y_points[i], x_points[i]
-        surrounding_pixels = mask[max(0, row - 1):min(row + 2, mask.shape[0]),
-                             max(0, col - 1):min(col + 2, mask.shape[1])]
-        average_value = np.mean(surrounding_pixels)
-        mask[row, col] = average_value
+
+    mask = copy.copy(mask)
+    for cl in classes:
+        idx = np.where(mask == cl)
+        y_points, x_points = idx
+        for i in range(len(y_points)):
+            row, col = y_points[i], x_points[i]
+            surrounding_pixels = mask[max(0, row - 1):min(row + 2, mask.shape[0]),
+                                 max(0, col - 1):min(col + 2, mask.shape[1])]
+            average_value = np.mean(surrounding_pixels)
+            mask[row, col] = average_value
     return mask
 
 
@@ -248,6 +284,65 @@ def rotate_translate_warp_points(points, rot, box, mat_proj, mat_pw, target_shap
     filtered_points_pw = tf_points_pw[mask_pw]
 
     return [filtered_points_proj, filtered_points_pw]
+
+
+def rotate_translate_warp_points2(mask, classes, rot, box, tf, target_shape, warped):
+    """
+    rotates, translates, and warps points to match the transformed segmentation mask.
+    Filters detected point lying outside the roi.
+    :param mask: The original full-sized segmentation mask that includes all classes
+    :param classes: List of integers specifying the class of point labels
+    :param rot: rotation matrix applied to the msak
+    :param box: the corner coordinates of the bounding box used to crop he roi from the image
+    :param tf: the transformation matrix
+    :param target_shape: the dimension of the desired output image
+    :param warped: the warped segmentation mask of the roi, without the points
+    :return: The complemented warped roi
+    """
+
+    # get input shape
+    w = box[1, 0] - box[0, 0]
+    h = box[2, 1] - box[1, 1]
+    input_shape = (h, w)
+
+    # loop over classes that are represented as points
+    for cl in classes:
+
+        # get class pixel positions
+        idx = np.where(mask == cl)
+
+        # if there are any pixels to transform, do so, else leave unchanged
+        if len(idx[0]) == 0:
+            continue
+
+        # extract points
+        points = np.array([[a, b] for a, b in zip(idx[1], idx[0])], dtype=np.int32)
+
+        # rotate points
+        points_rot = np.intp(cv2.transform(np.array([points]), rot))[0]
+
+        # translate points
+        tx, ty = (-box[0][0], -box[0][1])
+        translation_matrix = np.array([
+            [1, 0, tx],
+            [0, 1, ty]
+        ], dtype=np.float32)
+        points_trans = np.intp(cv2.transform(np.array([points_rot]), translation_matrix))[0]
+
+        # remove any rotated and translated point outside the roi
+        mask_pw = (points_trans[:, 1] < input_shape[0]) & (points_trans[:, 1] > 0) & \
+                  (points_trans[:, 0] < input_shape[1]) & (points_trans[:, 0] > 0)
+        points_filtered = points_trans[mask_pw]
+
+        # create and warp the point mask
+        point_mask = np.zeros(input_shape).astype("uint8")
+        point_mask[points_filtered[:, 1], points_filtered[:, 0]] = 255
+        lm = np.stack([point_mask, point_mask, point_mask], axis=2)
+        warped_pycn_mask = skimage.transform.warp(lm, tf, output_shape=target_shape)
+        coordinates = peak_local_max(warped_pycn_mask[:, :, 0], min_distance=1)
+        warped[coordinates[:, 0], coordinates[:, 1]] = cl
+
+    return warped
 
 
 def add_points_to_mask(mask, pycn_trf, rust_trf):
@@ -308,7 +403,7 @@ def find_keypoint_matches(current, current_orig, ref, dist_limit=150):
     return src, dst
 
 
-def check_keypoint_matches(src, dst, mdev, m):
+def check_keypoint_matches(src, dst, mdev, tol, m):
     """
     Verifies that the kd-tree identified associations are meaningful by comparing the distance between source and target
     across the top and bottom rows. Regular patterns are expected, and outliers from this pattern are removed.
@@ -323,38 +418,27 @@ def check_keypoint_matches(src, dst, mdev, m):
     if len(src) < 7:
         src, dst = [], []
     else:
-        # separate bottom and top row points, and order
-        src_t, src_b = sort_and_filter_points(data=np.array(src), m=m)
-        dst_t, dst_b = sort_and_filter_points(data=np.array(dst), m=m)
-        src = np.vstack([src_t, src_b])
-        dst = np.vstack([dst_t, dst_b])
-
         # broadly check for a regular pattern, if none is found delete all associations
-        # otherwise, remove outlier associations
         distances = pairwise_distances(src, dst)
         d = np.abs(distances - np.mean(distances))
         m_dev = np.mean(d)
-        if m_dev > mdev:
+        if mdev is not None and m_dev > mdev:
            src, dst = [], []
+        # otherwise, separately evaluate pairwise distances for top and bottom marks
+        # eliminate outliers from both, source and target, if any found
         else:
-            # calculate distances and identify outliers
-            distances = pairwise_distances(src, dst)
-            top_distances = distances[:len(src_t)]
-            bottom_distances = distances[len(src_t):]
-            outliers_top = reject_outliers(data=top_distances, m=m)
-            outliers_bottom = reject_outliers(data=bottom_distances, m=m)
+            outliers = []
+            for type in [src, dst]:
+                top, bottom = separate_marks(pts=np.array(type))
+                top_distances = distances[:len(top)]
+                bottom_distances = distances[len(bottom):]
+                outliers_top = reject_outliers(data=top_distances, tol=tol, m=m)
+                outliers_bottom = reject_outliers(data=bottom_distances, tol=tol, m=m)
+                outliers_bottom = [i + len(top) for i in outliers_bottom]
+                outliers.extend(outliers_top + outliers_bottom)
 
-            # delete outliers via their list indices
-            src_t = np.delete(src_t, outliers_top, 0)
-            src_b = np.delete(src_b, outliers_bottom, 0)
-            dst_t = np.delete(dst_t, outliers_top, 0)
-            dst_b = np.delete(dst_b, outliers_bottom, 0)
-
-            # assemble filtered point lists
-            src = np.vstack([src_t, src_b])
-            dst = np.vstack([dst_t, dst_b])
-            src = make_point_list_(src)
-            dst = make_point_list_(dst)
+            src = np.delete(src, outliers, 0)
+            dst = np.delete(dst, outliers, 0)
 
     return src, dst
 
@@ -515,6 +599,12 @@ def make_overlay(patch, mask, colors=[(1, 0, 0, 0.25)]):
 
 
 def rectangles_overlap(rect1, rect2):
+    """
+    Determines if two bboxes overlap
+    :param rect1: coordinates of bbox
+    :param rect2: coordinates of bbox
+    :return: Bool
+    """
     x1, y1, w1, h1 = rect1
     x2, y2, w2, h2 = rect2
 
