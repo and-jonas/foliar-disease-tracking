@@ -13,10 +13,10 @@ import exifread
 import pandas as pd
 from pyzbar.pyzbar import decode
 
-parent_dir = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf"
-# jpeg_dirs = [os.path.join(parent_dir, d, "JPEG_cam") for d in os.listdir(parent_dir)]
-jpeg_dirs = ["Z:/Public/Jonas/Data/ESWW007/SingleLeaf/20230608/JPEG"]  # head-over images
-
+parent_dir = "Z:/Public/Jonas/Data/ESWW009/SingleLeaf"
+jpeg_dirs = [os.path.join(parent_dir, d, "JPEG_cam") for d in os.listdir(parent_dir)]
+jpeg_dirs = jpeg_dirs[16:]
+# jpeg_dirs = ["Z:/Public/Jonas/Data/ESWW009/SingleLeaf/20230608/JPEG"]  # head-over images
 
 for dir in jpeg_dirs:
     files_in_dir = glob.glob(f'{dir}/*.JPG')

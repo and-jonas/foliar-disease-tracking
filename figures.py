@@ -67,3 +67,19 @@ for gi in guessing_images:
 
     imageio.imwrite(f"Z:/Public/Jonas/011_STB_leaf_tracking/Figures/guessing_images/{bn}", crop)
 
+# for plant methods
+imgs = glob.glob('Z:/Public/Jonas/008_SenDynUAV/Figures/scorings/imgs/*/*.JPG')
+for i in imgs:
+
+    img = Image.open(i)
+    img = np.array(img)
+    bn = os.path.basename(i)
+
+    scores = i.replace("\\", "/").split("/")[7]
+    fl0_score = scores.split("_")[1]
+    cnp_score = scores.split("_")[0]
+
+    # crop
+    crop = img[0:4000, 2000:6000]
+
+    imageio.imwrite(f"Z:/Public/Jonas/008_SenDynUAV/Figures/scorings/patches/{cnp_score}_{fl0_score}_{bn}", crop)

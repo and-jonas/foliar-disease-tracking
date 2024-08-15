@@ -1,24 +1,14 @@
 # ======================================================================================================================
 # Various helper functions
 # ======================================================================================================================
-from builtins import bin
 
 import numpy as np
 import cv2
-from scipy import ndimage
 from scipy.spatial import KDTree
 from scipy.spatial import distance as dist
 from skimage.feature import peak_local_max
 import skimage
 import copy
-import utils_smoothing
-import pickle
-from PIL import Image
-
-
-# import matplotlib
-# import matplotlib.pyplot as plt
-# matplotlib.use('Qt5Agg')
 
 
 def make_point_list_(input):
@@ -62,7 +52,7 @@ def reject_outliers(data, tol=None, m=2.):
     return idx
 
 
-def separate_marks(pts, w_ref, reference):
+def separate_marks(pts):
     """
     Separates top-row and bottom-row marks and sorts from left to right
     :param pts: key points
@@ -72,81 +62,12 @@ def separate_marks(pts, w_ref, reference):
     # separate marks on the left and right edges (where multiple marks may be present)
     # from "inner" marks (where only two separate rows of marks along the leaf edges are expected)
     pts_sorted_x = pts[np.argsort(pts[:, 0]), :]
-
-    # try to find edge markers by looking for at least 3 markers with similar x coordinates on both x ends
-    # If not at least 3 are found, delete all candidates
-    ref_l = pts_sorted_x[:8, :]
-    ref_r = pts_sorted_x[-8:, :]
-    left_diff = np.diff(ref_l[:, 0])
-    idx1l = np.min(np.where(left_diff < 100)[0])
-    if idx1l > 0:
-        idx2l = np.where(left_diff > 100)[0][idx1l]
-    else:
-        idx2l = np.min(np.where(left_diff > 100)[0])
-    l_idx = list(range(idx1l, idx2l + 1))
-    if not len(l_idx) > 2:
-        l_idx = []
-    right_diff = np.diff(ref_r[:, 0])
-    bb = np.where(right_diff < 100)[0]
-    xx = np.diff(bb)
-    if np.all(xx > 1):
-        idx1r = len(pts_sorted_x)
-    elif any(xx > 1):
-        pos = len(np.where(xx > 1)[0])
-        idx1r = np.min(bb[np.where(xx > 1)[0][0] + pos:]) + len(pts_sorted_x) - 8
-    else:
-        idx1r = np.min(bb) + len(pts_sorted_x) - 8
-    idx2r = np.max(np.where(right_diff < 100)[0]) + 2 + len(pts_sorted_x) - 8
-    r_idx = list(range(idx1r, idx2r))
-    # adjust for potentially removed marks
-    if len(l_idx) > 0:
-        r_idx = [i-idx1l for i in r_idx]
-    if not len(r_idx) > 2:
-        r_idx = []
-
-    # if edge markers are found, delete any markers that lie outside the putative edge markers
-    if len(l_idx) > 0:
-        pts_sorted_x = pts_sorted_x[idx1l:]
-        l_idx = [i - idx1l for i in l_idx]
-    if len(r_idx) > 0:
-        pts_sorted_x = pts_sorted_x[:idx2r]
-
-    # if no edge markers are found (maybe only 1-2 of them left)
-    # --> if not a size outlier, try to match by x - position
-    # get minimum area rectangle around retained key points
-    # get current roi width
-    rect = cv2.minAreaRect(pts_sorted_x)
-    (center, (w, h), angle) = rect
-    w = max(w, h)  # w and h can be exchanged!?!?!
-    w += 224
-    if not reference:
-        # check if roi width matches
-        if np.abs(w - w_ref) < 200:
-            left_position = 112
-            right_position = w_ref - 112
-            if len(l_idx) == 0:
-                l_idx = np.where(np.abs(pts_sorted_x[:, 0] - left_position) < 200)[0]
-            if len(r_idx) == 0:
-                r_idx = np.where(np.abs(pts_sorted_x[:, 0] - right_position) < 200)[0]
-
-    # get index of the inner (t, b) marks
-    if len(l_idx) == 0:
-        in_start = 0
-    else:
-        in_start = l_idx[-1] + 1
-    if len(r_idx) == 0:
-        in_end = len(pts)
-    else:
-        in_end = r_idx[0]
-    in_idx = np.array(range(in_start, in_end))
-
-    # select the points
-    pts_left = pts_sorted_x[l_idx]
+    pts_left = pts_sorted_x[0: np.where(np.diff(np.array(pts_sorted_x[:, 0])) > 200)[0][0] + 1]
     l = pts_left[np.argsort(pts_left[:, 1])]
-    pts_right = pts_sorted_x[r_idx]
+    pts_right = pts_sorted_x[np.where(np.diff(np.array(pts_sorted_x[:, 0])) > 200)[0][-1] + 1: len(pts_sorted_x)]
     r = pts_right[np.argsort(pts_right[:, 1])]
-    pts_inner = pts_sorted_x[in_idx]
-    pts_inner = pts_inner[np.argsort(pts_inner[:, 1])]
+
+    pts_inner = pts_sorted_x[len(pts_left):(len(pts) - len(pts_right))]
 
     # Use polynomial to separate top and bottom marks
     coefficients = np.polyfit(pts_inner[:, 0], pts_inner[:, 1], deg=2)
@@ -157,15 +78,15 @@ def separate_marks(pts, w_ref, reference):
     # sort from left to right
     t_idx = np.where(residuals < 0)[0]
     b_idx = np.where(residuals > 0)[0]
-    t = pts_inner[t_idx]
+    t = pts[t_idx]
     t = t[np.argsort(t[:, 0]), :]
-    b = pts_inner[b_idx]
+    b = pts[b_idx]
     b = b[np.argsort(b[:, 0]), :]
 
-    return l, r, t, b, w
+    return l, r, t, b
 
 
-def identify_outliers_2d(pts, tol, m, w_ref, reference):
+def identify_outliers_2d(pts, tol, m):
     """
     Separates top and bottom points and performs filtering within each group based on y-coordinates
     :param pts: the set of points to split and clean from outliers
@@ -174,7 +95,7 @@ def identify_outliers_2d(pts, tol, m, w_ref, reference):
     :return: the separated top and bottom points, cleaned from outliers
     """
 
-    l, r, t, b, w = separate_marks(pts, w_ref, reference)
+    t, b = separate_marks(pts)
 
     # find top and bottom outliers
     bottom_outliers = reject_outliers(data=b[:, 1], tol=tol, m=m)
@@ -184,7 +105,7 @@ def identify_outliers_2d(pts, tol, m, w_ref, reference):
     t = np.delete(t, top_outliers, 0)
     b = np.delete(b, bottom_outliers, 0)
 
-    return l, r, t, b, w
+    return t, b
 
 
 def pairwise_distances(points1, points2):
@@ -213,15 +134,10 @@ def reject_size_outliers(data, max_diff):
     mean_size_prev = np.mean(data[:-1])
     current_size = data[-1]
     if np.abs(current_size - mean_size_prev) > max_diff:
-        idx = len(data) - 1
-        if current_size - mean_size_prev > 0:
-            direction = "greater"
-        else:
-            direction = "smaller"
-
-        return [idx, direction]
+        idx = [len(data) - 1]
     else:
-        return None
+        idx = []
+    return idx
 
 
 def filter_points(x, y, min_distance):
@@ -274,14 +190,8 @@ def make_bbox_overlay(img, pts, box):
     :return: image with overlay
     """
     overlay = copy.copy(img)
-    if type(pts) is tuple:
-        colors = [(0, 0, 255), (255, 0, 0), (0, 255, 0), (255, 255, 0)]
-        for i in range(len(pts)):
-            for point in pts[i]:
-                cv2.circle(overlay, (point[0], point[1]), radius=15, color=colors[i], thickness=9)
-    else:
-        for point in pts:
-            cv2.circle(overlay, (point[0], point[1]), radius=15, color=(0, 0, 255), thickness=9)
+    for point in pts:
+        cv2.circle(overlay, (point[0], point[1]), radius=15, color=(0, 0, 255), thickness=9)
     if box is not None:
         box_ = np.intp(box)
         cv2.drawContours(overlay, [box_], 0, (255, 0, 0), 9)
@@ -420,117 +330,27 @@ def find_keypoint_matches(current, current_orig, ref, dist_limit=150):
     :return: matched pairs of keypoints coordinates in the source and the target
     """
 
-    # # separate marks according to position
-    # current_sep = separate_marks(pts=current, roi_width=roi_width)
-    # current_orig_sep = separate_marks(pts=current_orig, roi_width=roi_width)
-    # ref_sep = separate_marks(ref, roi_width=roi_width)
+    # make and query tree
+    tree = KDTree(current)
+    assoc = []
+    for I1, point in enumerate(ref):
+        _, I2 = tree.query(point, k=1, distance_upper_bound=dist_limit)
+        assoc.append((I1, I2))
 
-    src = []
-    dst = []
-    for c, co, r in zip(current[2:], current_orig[2:], ref[2:]):
+    # match indices back to key point coordinates
+    assocs = []
+    for a in assoc:
+        p1 = ref[a[0]].tolist()
+        try:
+            p2 = current_orig[a[1]].tolist()
+        except IndexError:
+            p2 = [np.NAN, np.NAN]
+        assocs.append([p1, p2])
 
-        # make and query tree
-        tree = KDTree(c)
-        assoc = []
-        for I1, point in enumerate(r):
-            _, I2 = tree.query(point, k=1, distance_upper_bound=dist_limit)
-            assoc.append((I1, I2))
-
-        # match indices back to key point coordinates
-        assocs = []
-        for a in assoc:
-            p1 = r[a[0]].tolist()
-            try:
-                p2 = co[a[1]].tolist()
-            except IndexError:
-                p2 = [np.NAN, np.NAN]
-            assocs.append([p1, p2])
-
-        # reshape to list of corresponding source and target key point coordinates
-        pair = assocs
-        src.append([[*p[0]] for p in pair if p[1][0] is not np.nan])
-        dst.append([[*p[1]] for p in pair if p[1][0] is not np.nan])
-
-    return src, dst
-
-
-def get_leaf_edge_distances(pts, leaf_mask):
-
-    # unpack points
-    l, r = pts
-
-    # invert leaf mask
-    mask_invert = np.bitwise_not(leaf_mask)
-
-    # get relative positions of left marks
-    try:
-        if len(l) > 0:
-            l_min_x = np.min(np.where(mask_invert[:, np.mean(l[:, 0]).astype(int)] == 255))
-            l_max_x = np.max(np.where(mask_invert[:, np.mean(l[:, 0]).astype(int)] == 255))
-            l_dist = np.array([(l[i, 1] - l_min_x) / (l_max_x - l_min_x) for i in range(len(l))])
-        else:
-            l_dist = np.array([])
-    except IndexError:
-        l_dist = np.array([])
-
-    # get relative positions of right marks
-    try:
-        if len(r) > 0:
-            r_min_x = np.min(np.where(mask_invert[:, np.mean(r[:, 0]).astype(int)] == 255))
-            r_max_x = np.max(np.where(mask_invert[:, np.mean(r[:, 0]).astype(int)] == 255))
-            r_dist = np.array([(r[i, 1] - r_min_x) / (r_max_x - r_min_x) for i in range(len(r))])
-        else:
-            r_dist = np.array([])
-    except IndexError:
-        r_dist = np.array([])
-
-    # assemble output
-    dist = (l_dist, r_dist)
-
-    return dist
-
-
-def find_distance_matches(current, ref, c_kpt, r_kpt, rel_limit):
-
-    # # separate marks according to position
-    # c_sep = separate_marks(pts=c_kpt, roi_width=roi_width)
-    # r_sep = separate_marks(pts=r_kpt, roi_width=roi_width)
-
-    src = []
-    dst = []
-    # for left and ride marks
-    for i in range(len(current)):
-        # subset the relevant marks
-        c = current[i]
-        r = ref[i]
-        assoc = []
-        # if the current and reference have equal number of marks, match them directly
-        if len(c) == len(r):
-            assoc = [(k, k) for k in range(len(c))]
-        # if the current and reference have equal number of marks, match them directly
-        else:
-            # Compute the pairwise differences
-            pairwise_diff = np.abs(c[:, np.newaxis] - r)
-            for x, row in enumerate(pairwise_diff):
-                min_index = np.argmin(row)
-                min_value = row[min_index]
-                if min_value < rel_limit:
-                    assoc.append([min_index, x])
-
-        # match indices back to key point coordinates
-        assocs = []
-        for a in assoc:
-            p1 = r_kpt[i][a[0]].tolist()
-            try:
-                p2 = c_kpt[i][a[1]].tolist()
-            except IndexError:
-                p2 = [np.NAN, np.NAN]
-            assocs.append([p1, p2])
-
-        # reshape to list of corresponding source and target key point coordinates
-        pair = assocs
-        src.append([[*p[0]] for p in pair if p[1][0] is not np.nan])
-        dst.append([[*p[1]] for p in pair if p[1][0] is not np.nan])
+    # reshape to list of corresponding source and target key point coordinates
+    pair = assocs
+    src = [[*p[0]] for p in pair if p[1][0] is not np.nan]
+    dst = [[*p[1]] for p in pair if p[1][0] is not np.nan]
 
     return src, dst
 
@@ -548,17 +368,11 @@ def check_keypoint_matches(src, dst, mdev, tol, m):
     :return: cleaned lists of source and destination points
     """
 
-    # unpack
-    src_t, src_b = src
-    src_ = src_t + src_b
-    dst_t, dst_b = dst
-    dst_ = dst_t + dst_b
-
-    if len(src_) < 7:
+    if len(src) < 7:
         src, dst = [], []
     else:
         # broadly check for a regular pattern, if none is found delete all associations
-        distances = pairwise_distances(src_, dst_)
+        distances = pairwise_distances(src, dst)
         d = np.abs(distances - np.mean(distances))
         m_dev = np.mean(d)
         if mdev is not None and m_dev > mdev:
@@ -566,17 +380,18 @@ def check_keypoint_matches(src, dst, mdev, tol, m):
         else:
             # otherwise, separately evaluate pairwise distances for top and bottom marks
             # eliminate outliers from both, source and target, if any found
+            outliers = []
             for type in [src, dst]:
-                t, b = type
-                t_distances = distances[:len(t)]
-                b_distances = distances[len(t):]
-                outliers_t = reject_outliers(data=t_distances, tol=tol, m=m)
-                outliers_b = reject_outliers(data=b_distances, tol=tol, m=m)
+                top, bottom = separate_marks(pts=np.array(type))
+                top_distances = distances[:len(top)]
+                bottom_distances = distances[len(top):]
+                outliers_top = reject_outliers(data=top_distances, tol=tol, m=m)
+                outliers_bottom = reject_outliers(data=bottom_distances, tol=tol, m=m)
+                outliers_bottom = [i + len(top) for i in outliers_bottom]
+                outliers.extend(outliers_top + outliers_bottom)
             try:
-                src[0] = np.delete(src[0], outliers_t, 0).tolist()
-                src[1] = np.delete(src[1], outliers_b, 0).tolist()
-                dst[0] = np.delete(dst[0], outliers_t, 0).tolist()
-                dst[1] = np.delete(dst[1], outliers_b, 0).tolist()
+                src = np.delete(src, outliers, 0)
+                dst = np.delete(dst, outliers, 0)
             except IndexError:
                 pass
 
@@ -717,120 +532,4 @@ def rectangles_overlap(rect1, rect2):
         return False
     else:
         return True
-
-
-def get_pseudo_leaf_mask(img):
-    img_resized = cv2.resize(img, (0, 0), fx=0.1, fy=0.1)
-    hsv = cv2.cvtColor(img_resized, cv2.COLOR_RGB2HSV)
-    lower = np.array([0, 0, 150])  # v changed successively from 35 to 30 to 22 for selected images
-    upper = np.array([255, 255, 255])
-    mask = cv2.inRange(hsv, lower, upper)
-    M = cv2.medianBlur(mask, 13)
-    M_resized = cv2.resize(M, (0, 0), fx=10, fy=10)
-    return M_resized
-
-
-def get_color_spaces(patch):
-
-    # Scale to 0...1
-    img_RGB = np.array(patch / 255, dtype=np.float32)
-
-    # Images are in RGBA mode, but alpha seems to be a constant - remove to convert to simple RGB
-    img_RGB = img_RGB[:, :, :3]
-
-    # Convert to other color spaces
-    img_HSV = cv2.cvtColor(img_RGB, cv2.COLOR_RGB2HSV)
-    img_Luv = cv2.cvtColor(img_RGB, cv2.COLOR_RGB2Luv)
-    img_Lab = cv2.cvtColor(img_RGB, cv2.COLOR_RGB2Lab)
-    img_YUV = cv2.cvtColor(img_RGB, cv2.COLOR_RGB2YUV)
-    img_YCbCr = cv2.cvtColor(img_RGB, cv2.COLOR_RGB2YCrCb)
-
-    # Calculate vegetation indices: ExR, ExG, TGI
-    R, G, B = cv2.split(img_RGB)
-    normalizer = np.array(R + G + B, dtype=np.float32)
-    # Avoid division by zero
-    normalizer[normalizer == 0] = 10
-    r, g, b = (R, G, B) / normalizer
-
-    # weights for TGI
-    lambda_r = 670
-    lambda_g = 550
-    lambda_b = 480
-
-    TGI = -0.5 * ((lambda_r - lambda_b) * (r - g) - (lambda_r - lambda_g) * (r - b))
-    ExR = np.array(1.4 * r - b, dtype=np.float32)
-    ExG = np.array(2.0 * g - r - b, dtype=np.float32)
-
-    # Concatenate all
-    descriptors = np.concatenate(
-        [img_RGB, img_HSV, img_Lab, img_Luv, img_YUV, img_YCbCr, np.stack([ExG, ExR, TGI], axis=2)], axis=2)
-    # Names
-    descriptor_names = ['sR', 'sG', 'sB', 'H', 'S', 'V', 'L', 'a', 'b',
-                        'L', 'u', 'v', 'Y', 'U', 'V', 'Y', 'Cb', 'Cr', 'ExG', 'ExR', 'TGI']
-
-    # Return as tuple
-    return (img_RGB, img_HSV, img_Lab, img_Luv, img_YUV, img_YCbCr, ExG, ExR, TGI), descriptors, descriptor_names
-
-
-def segment_image(img, model, scale_factor):
-    """
-    Segments an image using a pre-trained pixel classification model.
-    Creates probability maps, binary segmentation masks, and overlay
-    :param img: The image to be processed.
-    :return: The resulting binary segmentation mask.
-    """
-
-    model.n_jobs = 1
-
-    # resize image
-    img_rsz = cv2.resize(img, (0, 0), fx=scale_factor, fy=scale_factor)
-
-    # extract pixel features
-    color_spaces, descriptors, descriptor_names = get_color_spaces(img_rsz)
-    descriptors_flatten = descriptors.reshape(-1, descriptors.shape[-1])
-
-    # extract pixel label probabilities
-    segmented_flatten_probs = model.predict_proba(descriptors_flatten)[:, 0]
-
-    # restore image
-    probabilities = segmented_flatten_probs.reshape((descriptors.shape[0], descriptors.shape[1]))
-
-    # perform edge-aware smoothing
-    output_solver, thresh = utils_smoothing.smooth_edge_aware(reference=img_rsz, target=probabilities)
-
-    ret, thresh1 = cv2.threshold(output_solver, 127, 255, cv2.THRESH_BINARY +
-                                 cv2.THRESH_OTSU)
-
-    # get white
-    lower = np.array([155, 155, 155])  # v changed successively from 35 to 30 to 22 for selected images
-    upper = np.array([255, 255, 255])
-    mask = cv2.inRange(img_rsz, lower, upper)
-
-    # blur
-    full = np.bitwise_or(thresh1, mask)
-    full = cv2.medianBlur(full, 17)
-    # fill holes
-    bin = ndimage.binary_fill_holes(np.bitwise_not(full))
-    full = np.bitwise_not(bin).astype("uint8")
-    kernel = np.ones((1, 9), np.uint8)
-    full = cv2.dilate(full, kernel, iterations=3)
-    full_inv = np.bitwise_not(full)
-    full_inv = cv2.dilate(full_inv, kernel, iterations=3)
-    full = np.bitwise_not(full_inv)*255
-
-    M = full.ravel()
-    M = np.expand_dims(M, -1)
-    out_mask = np.dot(M, np.array([[1, 0, 0, 0.33]]))
-    out_mask = np.reshape(out_mask, newshape=(img_rsz.shape[0], img_rsz.shape[1], 4))
-    out_mask = out_mask.astype("uint8")
-    mask = Image.fromarray(out_mask, mode="RGBA")
-    img_ = Image.fromarray(img_rsz, mode="RGB")
-    img_ = img_.convert("RGBA")
-    img_.paste(mask, (0, 0), mask)
-    overlay = np.asarray(img_)
-
-    # scale up the mask
-    full = cv2.resize(full, (0, 0), fx=1/scale_factor, fy=1/scale_factor, interpolation=cv2.INTER_NEAREST)
-
-    return full, overlay
 

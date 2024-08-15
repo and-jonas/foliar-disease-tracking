@@ -14,32 +14,10 @@ from matplotlib import path
 # matplotlib.use('Qt5Agg')
 
 
-def reject_borders(image_):
-    """
-    Removes objects that touch on image borders
-    :param image_: the binary image on which to perform the cleaning operation
-    :return: the cleaned binary image
-    """
-    out_image = image_.copy()
-    h, w = image_.shape[:2]
-    for row in range(h):
-        if out_image[row, 0] == 255:
-            cv2.floodFill(out_image, None, (0, row), 0)
-        if out_image[row, w - 1] == 255:
-            cv2.floodFill(out_image, None, (w - 1, row), 0)
-    for col in range(w):
-        if out_image[0, col] == 255:
-            cv2.floodFill(out_image, None, (col, 0), 0)
-        if out_image[h - 1, col] == 255:
-            cv2.floodFill(out_image, None, (col, h - 1), 0)
-    return out_image
-
-
 def get_bounding_boxes(rect):
     """
     Get bounding boxes of each maintained lesion in a full leaf image
-    :param mask: Binary segmentation mask of the image to process
-    :param check_img: A copy of the corresponding image
+    :param rect: the original rectangle
     :return: Coordinates of the bounding boxes as returned by cv2.boundingRect()
     """
     x, y, w, h = rect
@@ -149,31 +127,6 @@ def check_color_profiles(color_profiles, dist_profiles_outer, leaf_profiles, spl
     spl_n_full_length = [i for j, i in enumerate(spline_normals) if j not in np.unique(cols)]
     spl_n_red_length = [i for j, i in enumerate(spline_normals) if j in np.unique(cols)]
     checked_cprof = np.delete(color_profiles, cols, 1)
-
-    return checked_cprof, spl_n_full_length, spl_n_red_length
-
-
-def remove_neighbor_lesions(checked_profiles, dist_profiles_multi, spl_n_clean):
-    """
-    Removes color profiles that extend into the "incluencing sphere" of close-by other lesions; ALTERNATIVELY,
-    the limits of the "sphere of influence" of a lesion is extracted, and color profiles are maintained until this point,
-    whereas pixels beyond this point are set to white.
-    :param checked_profiles: A 3D array (an image). The color profiles returned by check_color_profiles
-    :param dist_profiles_multi: Distance profiles, sampled spline normals (distance map on binary mask with all objects)
-    :param spl_n_clean: The maintained spline normals in cv2 format
-    :return: A subset of the input color profiles, where profiles exending into near-by lesions have been removed,
-    The corresponding spline normals in cv2 format.
-    """
-
-    dist_profiles_multi_ = dist_profiles_multi.astype("int32")
-    diff_out = np.diff(dist_profiles_multi_, axis=0)
-
-    # separate the normals into complete and incomplete
-    cols = np.where(diff_out < 0)[1]
-    spl_n_full_length = [i for j, i in enumerate(spl_n_clean) if j not in np.unique(cols)]
-    spl_n_red_length = [i for j, i in enumerate(spl_n_clean) if j in np.unique(cols)]
-
-    checked_cprof = np.delete(checked_profiles, cols, 1)
 
     return checked_cprof, spl_n_full_length, spl_n_red_length
 
@@ -322,9 +275,6 @@ def spline_approx_contour(contour, sf=0.25):
         # evaluate  B-spline
         u_new = np.linspace(u.min(), u.max(), int(len(contour_points)))
         y_new, x_new = si.splev(u_new, tck, der=0)
-        # thin
-        # y_new = y_new[0::thin]
-        # x_new = x_new[0::thin]
     except (ValueError, TypeError) as error:
         print(error)
         x_new, y_new = ([], [])
@@ -346,7 +296,6 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker, distance_invert
     contour, _ = cv2.findContours(mask_obj, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
     # get spline points and smoothed contour
-
     spline_points = spline_approx_contour(contour, sf=0.25)
 
     # if the spline approximation was successful, process normally
@@ -362,8 +311,6 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker, distance_invert
         color_profiles = extract_normals_pixel_values(img=img, normals=spl_n)
 
         # # sample normals on distance maps
-        # mask_invert = np.bitwise_not(mask_obj)
-        # distance_invert = ndi.distance_transform_edt(mask_invert)
         dist_profiles_outer = extract_normals_pixel_values(img=distance_invert, normals=spl_n)
 
         # sample normals on leaf masks
@@ -377,21 +324,8 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker, distance_invert
             spline_normals=spl_n,
         )
 
-        # # remove normals extending into neighbor lesions
-        # if not spl_n == spl_n_red:
-        #     mask_all_invert = np.bitwise_not(mask_all)
-        #     distance_invert_all = ndi.distance_transform_edt(mask_all_invert)
-        #     dist_profiles_multi = extract_normals_pixel_values(img=distance_invert_all, normals=spl_n_full)
-        #     final_profiles, spl_n_full_l, spl_n_red_l = remove_neighbor_lesions(
-        #         checked_profiles=checked_profiles,
-        #         dist_profiles_multi=dist_profiles_multi,
-        #         spl_n_clean=spl_n_full,
-        #     )
-        # else:
-        #     final_profiles, spl_n_full_l, spl_n_red_l = None, [], []
     else:
         spl_n = []
-        spl_n_full = []
         sm_contour = []
         final_profiles, spl_n_full, spl_n_red, = None, [], []
 
@@ -399,10 +333,6 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker, distance_invert
     # add analyzable normals
     for i in range(len(spl_n_full)):
         cv2.drawContours(checker, spl_n_full[i], -1, (255, 0, 0), 1)
-    # # add normals extending into neighboring lesions
-    # if spl_n_red_l is not None:
-    #     for i in range(len(spl_n_red_l)):
-    #         cv2.drawContours(checker, spl_n_red_l[i], -1, (0, 255, 0), 1)
     # add normals on leaf edges or extending into the lesion itself
     if spl_n_red is not None:
         for i in range(len(spl_n_red)):

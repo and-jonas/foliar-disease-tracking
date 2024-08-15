@@ -23,16 +23,22 @@ import datetime
 # import matplotlib
 # import matplotlib.pyplot as plt
 # matplotlib.use('Qt5Agg')
-#
-# base_dir = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
-#
-# # list all samples for which the transformation was successful
-# existing_output = glob.glob(f'{base_dir}/*/result/piecewise/*.JPG')
-# bnames = [os.path.basename(x).replace(".JPG", "") for x in existing_output]
-#
-# # list all paths to masks
-# masks = glob.glob(f'{base_dir}/*/mask/*.png')
-#
+
+base_dir = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
+
+# list all samples for which the transformation was successful
+existing_output = glob.glob(f'{base_dir}/*/result/piecewise/*.JPG')
+bnames = [os.path.basename(x).replace(".JPG", "") for x in existing_output]
+
+# list all paths to masks
+masks = glob.glob(f'{base_dir}/*/mask2/*.png')
+masks = [m for m in masks if os.path.basename(m).replace(".png", "") in bnames]
+
+processed = glob.glob(f'{base_dir}/*/mask_aligned/piecewise/*.png')
+pnames = [os.path.basename(x).replace(".png", "") for x in processed]
+masks = [m for m in masks if os.path.basename(m).replace(".png", "") not in pnames]
+
+
 # ======================================================================================================================
 
 
@@ -115,7 +121,7 @@ def transform_mask(path_to_mask, n_classes=6):
 
     # warp points
     if tform is not None:
-        complete = utils.rotate_translate_warp_points2(
+        complete = utils.rotate_translate_warp_points(
             mask=full_mask,
             classes=[5, 6],
             rot=rot,
@@ -136,18 +142,18 @@ def transform_mask(path_to_mask, n_classes=6):
     complete = complete.astype("uint8")
 
     # save
-    out_dir = Path(f'{base_dir}/{leaf_name}/mask_aligned2/')
+    out_dir = Path(f'{base_dir}/{leaf_name}/mask_aligned/')
     out_dir_pw = out_dir / "piecewise"
     out_dir_pw.mkdir(exist_ok=True, parents=True)
     mask_name = f'{out_dir_pw}/{base_name}'
     imageio.imwrite(mask_name, complete)
 
 
-# def run(path):
-#     try:
-#         transform_mask(path)
-#     except FileNotFoundError:
-#         print("file not found")
+def run(path):
+    try:
+        transform_mask(path)
+    except FileNotFoundError:
+        print("file not found")
 
 
 def files_newer_than(files, day, hour, mins):
@@ -160,35 +166,40 @@ def files_newer_than(files, day, hour, mins):
             file_list.append(a)
     return file_list
 
-# # ======================================================================================================================
+# ======================================================================================================================
+
+
+for m in masks:
+    print(m)
+    try:
+        transform_mask(m)
+    except:
+        continue
+
+# ======================================================================================================================
+
+
+# if __name__ == '__main__':
 #
+#     base_dir = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
+#     # base_dir = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
+#     masks = glob.glob(f'{base_dir}/*/mask2/*.png')
 #
-# for m in masks:
-#     transform_mask(m)
+#     # only list files which have been successfully transformed
+#     existing_output = glob.glob(f'{base_dir}/*/result/piecewise/*.JPG')
+#     processed = glob.glob(f'{base_dir}/*/mask_aligned/piecewise/*.png')
+#     # proc = files_newer_than(processed, day=2, hour=0, mins=0)
+#     bnames = [os.path.basename(x).replace(".JPG", "") for x in existing_output]
+#     pnames = [os.path.basename(x).replace(".png", "") for x in processed]
+#     masks = [m for m in masks if os.path.basename(m).replace(".png", "") in bnames]
+#     masks = [m for m in masks if os.path.basename(m).replace(".png", "") not in pnames]
 #
-# # ======================================================================================================================
-
-
-if __name__ == '__main__':
-
-    base_dir = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
-    masks = glob.glob(f'{base_dir}/*/mask2/*.png')
-
-    # only list files which have been successfully transformed
-    existing_output = glob.glob(f'{base_dir}/*/result/piecewise/*.JPG')
-    # processed = glob.glob(f'{base_dir}/*/mask_aligned2/piecewise/*.png')
-    # proc = files_newer_than(processed, day=2, hour=0, mins=0)
-    bnames = [os.path.basename(x).replace(".JPG", "") for x in existing_output]
-    # pnames = [os.path.basename(x).replace(".png", "") for x in proc]
-    masks = [m for m in masks if os.path.basename(m).replace(".png", "") in bnames]
-    # masks = [m for m in masks if os.path.basename(m).replace(".png", "") not in pnames]
-
-    num_processes = 6
-
-    print("processing " + str(len(masks)) + " samples")
-
-    # Create a multiprocessing pool to parallelize the loop
-    with multiprocessing.Pool(processes=num_processes) as pool:
-        pool.map(transform_mask, masks)
+#     num_processes = 2
+#
+#     print("processing " + str(len(masks)) + " samples")
+#
+#     # Create a multiprocessing pool to parallelize the loop
+#     with multiprocessing.Pool(processes=num_processes) as pool:
+#         pool.map(transform_mask, masks)
 
 # ======================================================================================================================

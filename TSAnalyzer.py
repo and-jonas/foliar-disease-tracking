@@ -88,7 +88,7 @@ class TSAnalyzer:
             mask_series.append(sample_masks)
             image_series.append(sample_image_names)
 
-        return mask_series, image_series
+        return mask_series[152:153], image_series[152:153]
 
     def process_series(self, work_queue, result):
         """
@@ -100,6 +100,17 @@ class TSAnalyzer:
 
             m_series = job["mseries"]
             i_series = job["iseries"]
+
+            # PLOTS = ["ESWW0070025_3", "ESWW0070054_3", "ESWW0070060_3", "ESWW0070094_3"]
+            #
+            # def contains_plot(string):
+            #     for plot in PLOTS:
+            #         if plot in string:
+            #             return True
+            #     return False
+            #
+            # if not contains_plot(m_series[0]):
+            #     continue
 
             # # check that there are an equal number of images and coordinate files
             # if len(m_series) != len(i_series):
@@ -123,6 +134,9 @@ class TSAnalyzer:
             for frame_number in range(1, num_frames + 1):
 
                 print("--" + str(frame_number))
+
+                if frame_number == 10:
+                    print("stop")
 
                 # get sample identifiers
                 png_name = os.path.basename(m_series[frame_number - 1])
@@ -150,7 +164,7 @@ class TSAnalyzer:
                 mask_leaf = np.where(mask_leaf, 255, 0).astype("uint8")
 
                 # get lesion mask
-                frame = np.where(frame_ == 102, 255, 0).astype("uint8")
+                frame = np.where(frame_ == 85, 255, 0).astype("uint8")
                 frame = utils.filter_objects_size(mask=frame, size_th=500, dir="smaller")
                 # fill small holes
                 kernel = np.ones((3, 3), np.uint8)
@@ -354,7 +368,8 @@ class TSAnalyzer:
 
                         # extract pycnidia number
                         pycn_mask = np.where(roi, frame_, 0)
-                        n_pycn = len(np.where(pycn_mask == 204)[0])
+                        n_pycn = len(np.where(pycn_mask == 212)[0])
+                        pycn_density_lesion = n_pycn / contour_area
 
                         # collect output data
                         lesion_data.append({'label': current_label,
@@ -367,18 +382,21 @@ class TSAnalyzer:
                                             # 'neigh_perimeter': neigh_perimeter,
                                             'max_width': w,
                                             'max_height': h,
-                                            'n_pycn': n_pycn})
+                                            'n_pycn': n_pycn,
+                                            'pycn_density': pycn_density_lesion})
                     else:
                         lesion_data.append({'label': current_label,
                                             'area': np.nan,
                                             'perimeter': np.nan,
                                             'solidity': np.nan,
                                             'analyzable_perimeter': np.nan,
-                                            'edge_perimeter': np.nan,
-                                            'neigh_perimeter': np.nan,
+                                            'occluded_perimeter': occluded_perimeter,
+                                            # 'edge_perimeter': np.nan,
+                                            # 'neigh_perimeter': np.nan,
                                             'max_width': np.nan,
                                             'max_height': np.nan,
-                                            'n_pycn': np.nan})
+                                            'n_pycn': np.nan,
+                                            'pycn_density': np.nan})
 
                 # Update the labels with the new matches
                 labels = object_matches
@@ -392,14 +410,16 @@ class TSAnalyzer:
                 la_tot = (frame_.shape[0] * frame_.shape[1]) - len(
                     np.where(frame_ == 0)[0])  # roi area - background pixels
                 la_damaged = len(np.where((frame_ != 0) & (frame_ != 51))[0])
-                la_healthy = len(np.where(frame_ == 51)[0])
+                la_healthy = len(np.where(frame_ == 42)[0])
                 la_damaged_f = la_damaged / la_tot
                 la_healthy_f = la_healthy / la_tot
-                la_insect = len(np.where(frame_ == 153)[0])
-                n_pycn = len(np.where(frame_ == 204)[0])
-                n_rust = len(np.where(frame_ == 255)[0])
+                la_insect = len(np.where(frame_ == 127)[0])
+                n_pycn = len(np.where(frame_ == 212)[0])
+                rust_idx = np.where(frame_ == 255)
+                rust_point_list = utils.filter_points(x=rust_idx[1], y=rust_idx[0], min_distance=7)
+                n_rust = len(rust_point_list)
                 n_lesion = len(contours)
-                placl = len(np.where((frame_ == 102) | (frame_ == 204))[0]) / (la_tot - la_insect)
+                placl = len(np.where((frame_ == 85) | (frame_ == 212))[0]) / (la_tot - la_insect)
                 pycn_density = n_pycn / (la_tot - la_insect)
                 rust_density = n_rust / (la_tot - la_insect)
 
@@ -459,13 +479,34 @@ class TSAnalyzer:
                 # Draw and save the labeled objects on the frame
                 frame_with_labels = cv2.cvtColor(seg, cv2.COLOR_GRAY2BGR)
                 image_with_labels = copy.copy(out_checker)
+                image_with_pycn = copy.copy(img)
                 for label, (x, y, w, h) in labels.items():
                     cv2.rectangle(frame_with_labels, (x, y), (x + w, y + h), (0, 255, 0), 2)
                     cv2.putText(frame_with_labels, str(label), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
                     cv2.rectangle(image_with_labels, (x, y), (x + w, y + h), (0, 0, 255), 2)
                     cv2.putText(image_with_labels, str(label), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                    # cv2.rectangle(image_with_pycn, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                    # cv2.putText(image_with_pycn, str(label), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+
+                # Draw pycnidia and rust
+                pycnidia = np.where(frame_ == 212)
+                try:
+                    p_y_coords, p_x_coords = pycnidia
+                    # Draw circles at the specified coordinates
+                    for x, y in zip(p_y_coords, p_x_coords):
+                        cv2.circle(image_with_pycn, (y, x), 5, (255, 0, 0), 1)
+                except IndexError:
+                    pass
+                try:
+                    r_y_coords, r_x_coords = rust_point_list[:, 1], rust_point_list[:, 0]
+                    for x, y in zip(r_y_coords, r_x_coords):
+                        cv2.circle(image_with_pycn, (y, x), 5, (0, 255, 0), 1)
+                except IndexError:
+                    pass
+
                 # cv2.imwrite(f'{out_paths[0]}/{png_name}', frame_with_labels)
                 imageio.imwrite(f'{out_paths[1]}/{png_name}', image_with_labels)
+                imageio.imwrite(f'{out_paths[0]}/{png_name}', image_with_pycn)
 
             result.put(series_id)
 
