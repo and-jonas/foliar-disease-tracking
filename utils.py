@@ -75,6 +75,7 @@ def separate_marks(pts, w_ref, reference):
 
     # try to find edge markers by looking for at least 3 markers with similar x coordinates on both x ends
     # If not at least 3 are found, delete all candidates
+    # except in the reference image, where the left-most points are considered to be the l.
     ref_l = pts_sorted_x[:8, :]
     ref_r = pts_sorted_x[-8:, :]
     left_diff = np.diff(ref_l[:, 0])
@@ -84,7 +85,7 @@ def separate_marks(pts, w_ref, reference):
     else:
         idx2l = np.min(np.where(left_diff > 100)[0])
     l_idx = list(range(idx1l, idx2l + 1))
-    if not len(l_idx) > 2:
+    if not len(l_idx) > 2 and not reference:
         l_idx = []
     right_diff = np.diff(ref_r[:, 0])
     bb = np.where(right_diff < 100)[0]
@@ -351,6 +352,57 @@ def remove_points_from_mask(mask, classes):
     return mask
 
 
+def filter_points_x(point_list, image):
+
+    # get minimum area rectangle around retained key points
+    rect = cv2.minAreaRect(point_list)
+
+    # enlarge to enable feature extraction for 56 px square box around detected markers
+    (center, (w, h), angle) = rect
+
+    # rotate the image about its center
+    if angle > 45:
+        angle = angle - 90
+    rows, cols = image.shape[0], image.shape[1]
+    M_img = cv2.getRotationMatrix2D((cols / 2, rows / 2), angle, 1)
+
+    all_pts_rot = np.intp(cv2.transform(np.array([point_list]), M_img))[0]
+    l, r, t, b, w = identify_outliers_2d(
+        pts=all_pts_rot,
+        tol=100,
+        m=3,
+        w_ref=None,
+        reference=True
+    )
+    filtered_pts_rot = np.vstack([l, r, t, b])
+
+    # 1. Extract the rotation part (top-left 2x2)
+    R = M_img[:2, :2]
+
+    # 2. Transpose the rotation part (this is the inverse rotation)
+    R_inv = R.T
+
+    # 3. Compute the inverse translation
+    t = M_img[:2, 2]  # Translation vector
+    t_inv = -R_inv @ t  # Apply inverse rotation to the negative translation
+
+    # 4. Construct the full inverse affine matrix
+    m_rot_inv = np.eye(3)  # Start with identity matrix
+    m_rot_inv[:2, :2] = R_inv  # Set the inverse rotation
+    m_rot_inv[:2, 2] = t_inv  # Set the inverse translation
+
+    # 5. Apply the inverse transformation to your rotated points (all_pts_rot)
+    # Make sure the points are in the right format (array of points, 2D)
+    filtered_pts_unrot = cv2.transform(np.array([filtered_pts_rot]), m_rot_inv)[0][:, :2]
+
+    # convert to list and back to np.array
+    # this is necessary for cv.minAreaRect() to be able to process the point list (?????)
+    filtered_pts_unrot = filtered_pts_unrot.tolist()
+    filtered_pts_unrot = np.array(filtered_pts_unrot)
+
+    return filtered_pts_unrot
+
+
 def rotate_translate_warp_points(mask, classes, rot, box, tf, target_shape, warped):
     """
     rotates, translates, and warps points to match the transformed segmentation mask.
@@ -516,6 +568,7 @@ def find_distance_matches(current, ref, c_kpt, r_kpt, rel_limit):
                 min_value = row[min_index]
                 if min_value < rel_limit:
                     assoc.append([min_index, x])
+                    # assoc.append([x, min_index])
 
         # match indices back to key point coordinates
         assocs = []
@@ -833,4 +886,3 @@ def segment_image(img, model, scale_factor):
     full = cv2.resize(full, (0, 0), fx=1/scale_factor, fy=1/scale_factor, interpolation=cv2.INTER_NEAREST)
 
     return full, overlay
-

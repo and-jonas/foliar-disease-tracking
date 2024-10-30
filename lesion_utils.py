@@ -4,7 +4,7 @@ import scipy.interpolate as si
 from skimage.draw import line
 import cv2
 import numpy as np
-import utils
+import utils_dpr
 from scipy import ndimage as ndi
 from skimage.segmentation import watershed
 from matplotlib import path

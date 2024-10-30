@@ -6,7 +6,7 @@
 from pathlib import Path
 import glob
 import os.path
-import utils
+import utils_dpr
 import lesion_utils
 import imageio
 import numpy as np

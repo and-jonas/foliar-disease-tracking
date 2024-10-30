@@ -16,12 +16,14 @@ def run():
     path_images = f'{workdir}/*/JPEG_cam'
     path_output = f'{workdir}/Output'
     path_model = modeldir
+    path_sample_list = f'{workdir}/Output/unmatched_all_orig.txt'
     roi_aligner = RoiAligner(
         path_labels=path_labels,
         path_images=path_images,
         path_output=path_output,
         path_model=path_model,
-        n_cpus=1,
+        path_sample_list=path_sample_list,
+        n_cpus=2,
     )
     roi_aligner.process_all()
 

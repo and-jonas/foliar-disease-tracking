@@ -10,7 +10,7 @@ import json
 import pandas as pd
 import pickle
 from PIL import Image
-import utils
+import utils_dpr
 import glob
 import os
 from pathlib import Path
@@ -30,12 +30,11 @@ from multiprocessing import Manager, Process
 
 class RoiAligner:
 
-    def __init__(self, path_labels, path_images, path_output, path_model, path_sample_list, n_cpus):
+    def __init__(self, path_labels, path_images, path_output, path_model, n_cpus):
         self.path_labels = Path(path_labels)
         self.path_images = Path(path_images)
         self.path_output = Path(path_output)
         self.path_model = Path(path_model)
-        self.path_sample_list = Path(path_sample_list)
         with open(self.path_model, 'rb') as model:
             self.model = pickle.load(model)
         self.n_cpus = n_cpus
@@ -84,7 +83,7 @@ class RoiAligner:
         f.writelines(image_id + " " + str(reason) + "\n")
         f.close()
 
-    def get_series(self, sample_list=None):
+    def get_series(self):
         """
         Creates two lists of file paths: to key point coordinate files and to images
         for each of the samples monitored over time, stored in date-wise folders.
@@ -101,17 +100,9 @@ class RoiAligner:
 
         if len(images) != len(labels):
             raise Exception("list of images and list of coordinate files are not of equal length.")
+
         print("found " + str(len(uniques)) + " unique sample names")
 
-        # if a file list is provided select the subset
-        if self.path_sample_list is not None:
-            file_list = pd.read_csv(self.path_sample_list, header=None, sep=" ")
-            sample_list = file_list.iloc[:, 0]
-            s_list = ["_".join(os.path.basename(l).split("_")[2:4]).replace(".txt", "") for l in sample_list]
-            uniques = np.unique(s_list)
-            print("processing " + str(len(uniques)) + " unique sample names")
-
-        # compile the lists
         for unique_sample in uniques:
             image_idx = [index for index, image_id in enumerate(image_image_id) if unique_sample == image_id]
             label_idx = [index for index, label_id in enumerate(label_image_id) if unique_sample == label_id]
@@ -123,7 +114,7 @@ class RoiAligner:
             label_series.append(sample_labels)
             image_series.append(sample_image_names)
 
-        return label_series, image_series
+        return label_series[9:10], image_series[9:10]
 
     def process_series(self, work_queue, result):
         """
@@ -146,6 +137,9 @@ class RoiAligner:
             for j in range(len(l_series)):
 
                 try:
+
+                    # if j == 8:
+                    #     print("stop")
 
                     # prepare sample work space
                     image_id = os.path.basename(l_series[j]).replace(".txt", "")
@@ -179,35 +173,35 @@ class RoiAligner:
                         print("Insufficient marks detected. Skipping. ")
                         continue
 
-                    # filter outliers in x
-                    if j == 0:
-                        point_list = utils.filter_points_x(point_list, image=img)
-
                     # get minimum area rectangle around retained key points
                     rect = cv2.minAreaRect(point_list)
-
-                    # enlarge to enable feature extraction for 56 px square box around detected markers
                     (center, (w, h), angle) = rect
-                    rect = (center, (w+224, h+224), angle)
 
                     # rotate the image about its center
                     if angle > 45:
                         angle = angle - 90
                     rows, cols = img.shape[0], img.shape[1]
-                    M_img = cv2.getRotationMatrix2D((cols / 2, rows / 2), angle, 1)
-                    img_rot = cv2.warpAffine(img, M_img, (cols, rows))
+                    m_rot = cv2.getRotationMatrix2D((cols / 2, rows / 2), angle, 1)
+                    img_rot = cv2.warpAffine(img, m_rot, (cols, rows))
+
+                    # in the reference image, check again for x outliers and get adjusted new bbox
+                    if j == 0:
+                        point_list = utils.filter_points_x(point_list=point_list, rotation_matrix=m_rot)
+                        rect = cv2.minAreaRect(point_list)
+                        (center, (w, h), angle) = rect
+
+                    rect = (center, (w + 224, h + 224), angle)
 
                     # rotate the bounding box about the image's center
-                    M_box = cv2.getRotationMatrix2D((cols / 2, rows / 2), angle, 1)
                     box = cv2.boxPoints(rect)
-                    pts = np.intp(cv2.transform(np.array([box]), M_box))[0]
+                    pts = np.intp(cv2.transform(np.array([box]), m_rot))[0]
                     pts[pts < 0] = 0
 
                     # order bbox points clockwise
                     pts = utils.order_points(pts)
 
                     # record roi localization
-                    roi_loc = {'rotation_matrix': M_img.tolist(), 'bounding_box': pts.tolist()}
+                    roi_loc = {'rotation_matrix': m_rot.tolist(), 'bounding_box': pts.tolist()}
 
                     # make crop to run inference on
                     img_cropped = utils.make_inference_crop(pts, img)
@@ -237,7 +231,7 @@ class RoiAligner:
                     save_img = copy.copy(img_crop)
 
                     # rotate and translate key point coordinates
-                    kpts = np.intp(cv2.transform(np.array([point_list]), M_img))[0]
+                    kpts = np.intp(cv2.transform(np.array([point_list]), m_rot))[0]
 
                     # get tx and ty values for key point translation
                     tx, ty = (-pts[0][0], -pts[0][1])
@@ -307,7 +301,7 @@ class RoiAligner:
                             ref=dist_ref,
                             c_kpt=kpts,
                             r_kpt=kpts_ref,
-                            rel_limit=0.15,
+                            rel_limit=0.1,
                         )
                         # verify that matches are spatially reasonable; remove outlier associations
                         # if too few points detected, skip
@@ -326,7 +320,7 @@ class RoiAligner:
                         if n_matches < match_thresh or np.abs(w-w_ref) > 200:
                             if n_matches < match_thresh:
                                 print(" ----- Key point mis-match. Matching on last image in series.")
-                            if np.abs(w-w_ref)>200:
+                            if np.abs(w-w_ref) > 200:
                                 print(" ----- Size outlier detected. Matching on last image in series.")
 
                             # go back (max 4 time steps) in the series until success
