@@ -1027,7 +1027,6 @@ def get_pycn_features(mask, lesion_mask, contour, max_dist, bandwidth, kernel):
         pycnidiation_mask = np.where(density_rsz >= 0.0001, 1, 0)
         lesion_pycn_mask = np.logical_and(lesion_mask, pycnidiation_mask)
         pycn_contour, _ = cv2.findContours(np.uint8(lesion_pycn_mask * 255), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        pycn_contour = pycn_contour[0]
         binary_mask = lesion_pycn_mask.astype(bool)
         density_array = density_rsz[binary_mask]
 

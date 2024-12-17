@@ -20,10 +20,14 @@ from scipy.spatial.distance import cdist
 from scipy import ndimage as ndi
 from multiprocessing import Manager, Process
 from matplotlib import path
+from tqdm import tqdm
 
 import matplotlib
 import matplotlib.pyplot as plt
-matplotlib.use('Qt5Agg')
+# matplotlib.use('Qt5Agg')
+
+# ignore numpy warnings
+np.seterr(invalid='ignore')
 
 
 class TSAnalyzer:
@@ -91,7 +95,7 @@ class TSAnalyzer:
             mask_series.append(sample_masks)
             image_series.append(sample_image_names)
 
-        return mask_series[0:10], image_series[0:10]
+        return mask_series, image_series
 
     def process_series(self, work_queue, result):
         """
@@ -123,7 +127,7 @@ class TSAnalyzer:
             # generate output directories for each series
             series_id = "_".join(os.path.basename(m_series[0]).split("_")[2:4]).replace(".png", "")
 
-            print("processing " + series_id)
+            # print("processing " + series_id)
 
             out_paths = self.create_output_dirs(series_id=series_id)
 
@@ -136,7 +140,7 @@ class TSAnalyzer:
             # Process each frame in the time series
             for frame_number in range(1, num_frames + 1):
 
-                print("--" + str(frame_number))
+                # print("--" + str(frame_number))
 
                 # get sample identifiers
                 png_name = os.path.basename(m_series[frame_number - 1])
@@ -289,10 +293,7 @@ class TSAnalyzer:
 
                 for idx, contour in enumerate(contours):
 
-                    if frame_number == 4:
-                        print("stop")
-
-                    print("----" + str(idx))
+                    # print("----" + str(idx))
 
                     # get the roi
                     x, y, w, h = map(int, cv2.boundingRect(contour))
@@ -307,7 +308,7 @@ class TSAnalyzer:
                     is_new_object = True
                     for lag_label, (lag_x, lag_y, lag_w, lag_h) in labels.items():
 
-                        print("------" + str(lag_label))
+                        # print("------" + str(lag_label))
 
                         # get the mask of the lag object in context
                         rect_lag = (lag_x, lag_y, lag_w, lag_h)
@@ -419,7 +420,9 @@ class TSAnalyzer:
                         lesion_data.append({'label': current_label} | {key: np.nan for key in keys})
 
                     # draw pycnidiation contour
-                    cv2.drawContours(image_with_pycn, pycn_contour, -1, (255, 255, 0), 2)
+                    if pycn_contour is not None:
+                        for p in pycn_contour:
+                            cv2.drawContours(image_with_pycn, pycn_contour, -1, (255, 255, 0), 2)
                     cv2.drawContours(image_with_pycn, contour, -1, (0, 0, 0), 2)
 
                     # data
@@ -458,12 +461,17 @@ class TSAnalyzer:
                 std_dist = np.nanstd(out)
                 cv_dist = std_dist / mean_dist
                 n_comps, output, stats, centroids = cv2.connectedComponentsWithStats(seg, connectivity=8)
-                distance = cdist(centroids[1:], centroids[1:], metric='euclidean')
-                np.fill_diagonal(distance, np.nan)
-                shortest_dist = np.nanmin(distance, axis=1)
-                mean_shortest_dist = np.mean(shortest_dist)
-                std_shortest_dist = np.std(shortest_dist)
-                cv_shortest_dist = std_shortest_dist / mean_shortest_dist
+                if n_comps > 2:
+                    distance = cdist(centroids[1:], centroids[1:], metric='euclidean')
+                    np.fill_diagonal(distance, np.nan)
+                    shortest_dist = np.nanmin(distance, axis=1)
+                    mean_shortest_dist = np.mean(shortest_dist)
+                    std_shortest_dist = np.std(shortest_dist)
+                    cv_shortest_dist = std_shortest_dist / mean_shortest_dist
+                else:
+                    mean_shortest_dist = np.nan
+                    std_shortest_dist = np.nan
+                    cv_shortest_dist = np.nan
 
                 # grab data
                 leaf_data = [
@@ -553,30 +561,28 @@ class TSAnalyzer:
             count = 0
 
             # Build up job queue
-            for mseries, iseries in zip(mask_series, image_series):
-                print("to queue")
-                job = dict()
-                job['mseries'] = mseries
-                job['iseries'] = iseries
-                jobs.put(job)
+            with tqdm(total=len(mask_series), desc="Processing jobs") as pbar:
+                for mseries, iseries in zip(mask_series, image_series):
+                    job = dict()
+                    job['mseries'] = mseries
+                    job['iseries'] = iseries
+                    jobs.put(job)
 
-            # Start processes
-            for w in range(self.n_cpus):
-                p = Process(target=self.process_series,
-                            args=(jobs, results))
-                p.daemon = True
-                p.start()
-                processes.append(p)
-                jobs.put('STOP')
+                # Start processes
+                for w in range(self.n_cpus):
+                    p = Process(target=self.process_series,
+                                args=(jobs, results))
+                    p.daemon = True
+                    p.start()
+                    processes.append(p)
+                    jobs.put('STOP')
 
-            print(str(len(mask_series)) + " jobs started, " + str(self.n_cpus) + " workers")
+                print(str(len(mask_series)) + " jobs started, " + str(self.n_cpus) + " workers")
 
-            # Get results and increment counter along with it
-            while count < max_jobs:
-                series_name = results.get()
-                count += 1
-                print("processed " + str(count) + "/" + str(max_jobs) + ": " + str(series_name))
+                # Get results and increment counter along with it
+                while count < max_jobs:
+                    count += 1
+                    pbar.update(1)
 
-            for p in processes:
-                p.join()
-                print(f"Process {series_name} finished.")
+                for p in processes:
+                    p.join()
