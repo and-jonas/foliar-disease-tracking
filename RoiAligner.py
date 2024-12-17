@@ -10,7 +10,7 @@ import json
 import pandas as pd
 import pickle
 from PIL import Image
-import utils_dpr
+import utils
 import glob
 import os
 from pathlib import Path

@@ -1,6 +1,6 @@
 import cv2
 
-import utils_dpr
+import utils
 from PIL import Image
 import glob
 import os

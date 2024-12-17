@@ -24,14 +24,15 @@ import datetime
 # import matplotlib.pyplot as plt
 # matplotlib.use('Qt5Agg')
 
-base_dir = "Z:/Public/Jonas/Data/ESWW007/SingleLeaf/Output"
+base_dir = "/home/anjonas/public/Public/Jonas/Data/ESWW009/SingleLeaf/Output"
 
 # list all samples for which the transformation was successful
 existing_output = glob.glob(f'{base_dir}/*/result/piecewise/*.JPG')
 bnames = [os.path.basename(x).replace(".JPG", "") for x in existing_output]
 
 # list all paths to masks
-masks = glob.glob(f'{base_dir}/*/mask2/*.png')
+# masks = glob.glob(f'{base_dir}/*/mask2/*.png')
+masks = glob.glob(f'{base_dir}/*/mask/*.png')
 masks = [m for m in masks if os.path.basename(m).replace(".png", "") in bnames]
 
 processed = glob.glob(f'{base_dir}/*/mask_aligned/piecewise/*.png')
@@ -43,7 +44,7 @@ masks = [m for m in masks if os.path.basename(m).replace(".png", "") not in pnam
 
 
 # Process masks
-def transform_mask(path_to_mask, n_classes=6):
+def transform_mask(base_dir, path_to_mask, n_classes, kpt_cls):
 
     print(path_to_mask)
 
@@ -57,10 +58,10 @@ def transform_mask(path_to_mask, n_classes=6):
     mask = Image.open(path_to_mask)
     mask = np.asarray(mask)
 
-    # get image
-    image = f'{base_dir}/{leaf_name}/crop/{jpg_name}'
-    img = Image.open(image)
-    img = np.asarray(img)
+    # # get image
+    # image = f'{base_dir}/{leaf_name}/crop/{jpg_name}'
+    # img = Image.open(image)
+    # img = np.asarray(img)
 
     # ==================================================================================================================
 
@@ -84,10 +85,11 @@ def transform_mask(path_to_mask, n_classes=6):
         pass
 
     # get image roi
-    full_img = np.zeros((5464, 8192, 3)).astype("uint8")
+    # full_img = np.zeros((5464, 8192, 3)).astype("uint8")
     mw, mh = map(int, np.mean(box, axis=0))
-    full_img[mh-1024:mh+1024, :] = img
-    rows, cols = full_img.shape[0], full_img.shape[1]
+    # full_img[mh-1024:mh+1024, :] = img
+    # rows, cols = full_img.shape[0], full_img.shape[1]
+    rows, cols = 5464, 8192
 
     # full mask
     full_mask = np.zeros((5464, 8192)).astype("uint8")
@@ -98,7 +100,7 @@ def transform_mask(path_to_mask, n_classes=6):
     # ==================================================================================================================
 
     # get rid of the points
-    segmentation_mask = utils.remove_points_from_mask(mask=full_mask, classes=[5, 6])
+    segmentation_mask = utils.remove_points_from_mask(mask=full_mask, classes=kpt_cls)
 
     # rotate mask
     segmentation_mask_rot = cv2.warpAffine(segmentation_mask, rot, (cols, rows))
@@ -123,7 +125,7 @@ def transform_mask(path_to_mask, n_classes=6):
     if tform is not None:
         complete = utils.rotate_translate_warp_points(
             mask=full_mask,
-            classes=[5, 6],
+            classes=kpt_cls,
             rot=rot,
             box=box,
             tf=tform,
@@ -149,36 +151,57 @@ def transform_mask(path_to_mask, n_classes=6):
     imageio.imwrite(mask_name, complete)
 
 
-def run(path):
-    try:
-        transform_mask(path)
-    except FileNotFoundError:
-        print("file not found")
+if __name__ == '__main__':
 
+    # find all masks
+    base_dir = base_dir
+    masks = glob.glob(f'{base_dir}/*/mask/*.png')
 
-def files_newer_than(files, day, hour, mins):
-    delta = datetime.timedelta(days=day, hours=hour, minutes=mins)
-    now = datetime.datetime.now()
-    file_list = []
-    for a in files:
-        c_time = datetime.datetime.fromtimestamp(os.path.getctime(a))
-        if now - delta < c_time:
-            file_list.append(a)
-    return file_list
+    # list all samples for which the transformation was successful
+    existing_output = glob.glob(f'{base_dir}/*/result/piecewise/*.JPG')
+    b_names = [os.path.basename(x).replace(".JPG", "") for x in existing_output]
 
-# ======================================================================================================================
+    # list all that can be processed
+    masks = [m for m in masks if os.path.basename(m).replace(".png", "") in b_names]
 
+    # get number of samples to process
+    n = len(masks)
 
-for m in masks:
-    print(m)
-    try:
-        transform_mask(m)
-    except:
-        continue
+    # list tasks
+    base_dir = [base_dir] * n
+    n_classes = [6] * n
+    kpt_cls = [(5, 6)] * n
+    tasks = [*zip(base_dir, masks, n_classes, kpt_cls)]
 
-# ======================================================================================================================
+    # transform masks
+    num_processes = 2
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        pool.starmap(transform_mask, tasks)
 
-
+#
+# def files_newer_than(files, day, hour, mins):
+#     delta = datetime.timedelta(days=day, hours=hour, minutes=mins)
+#     now = datetime.datetime.now()
+#     file_list = []
+#     for a in files:
+#         c_time = datetime.datetime.fromtimestamp(os.path.getctime(a))
+#         if now - delta < c_time:
+#             file_list.append(a)
+#     return file_list
+#
+# # ======================================================================================================================
+#
+#
+# for m in masks:
+#     print(m)
+#     try:
+#         transform_mask(m)
+#     except:
+#         continue
+#
+# # ======================================================================================================================
+#
+#
 # if __name__ == '__main__':
 #
 #     base_dir = "/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf/Output"

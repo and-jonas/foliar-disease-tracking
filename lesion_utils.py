@@ -4,7 +4,7 @@ import scipy.interpolate as si
 from skimage.draw import line
 import cv2
 import numpy as np
-import utils_dpr
+import utils
 from scipy import ndimage as ndi
 from skimage.segmentation import watershed
 from matplotlib import path
@@ -21,10 +21,10 @@ def get_bounding_boxes(rect):
     :return: Coordinates of the bounding boxes as returned by cv2.boundingRect()
     """
     x, y, w, h = rect
-    w = w + 30
-    h = h + 30
-    x = x - 15
-    y = y - 15
+    w = w + 40
+    h = h + 40
+    x = x - 20
+    y = y - 20
     # boxes must not extend beyond the edges of the image
     if x < 0:
         w = w-np.abs(x)
@@ -128,10 +128,10 @@ def check_color_profiles(color_profiles, dist_profiles_outer, leaf_profiles, spl
     spl_n_red_length = [i for j, i in enumerate(spline_normals) if j in np.unique(cols)]
     checked_cprof = np.delete(color_profiles, cols, 1)
 
-    return checked_cprof, spl_n_full_length, spl_n_red_length
+    return checked_cprof, spl_n_full_length, spl_n_red_length, cols
 
 
-def get_spline_normals(spline_points, length_in=0, length_out=15):
+def get_spline_normals(spline_points, length_in=0, length_out=20):
     """
     Gets spline normals (lines) in cv2 format
     :param spline_points: x- and y- coordinates of the spline base points, as returned by spline_approx_contour().
@@ -175,7 +175,7 @@ def get_spline_normals(spline_points, length_in=0, length_out=15):
     return normals
 
 
-def extract_normals_pixel_values(img, normals, length_in=0, length_out=15):
+def extract_normals_pixel_values(img, normals, length_in=0, length_out=20):
     """
     Extracts the pixel values situated on the spline normals.
     :param length_out: Int, how long the contour normals should extend from the lesion
@@ -317,7 +317,7 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker, distance_invert
         leaf_profiles = extract_normals_pixel_values(img=mask_leaf, normals=spl_n)
 
         # remove normals that extend into lesion
-        final_profiles, spl_n_full, spl_n_red = check_color_profiles(
+        final_profiles, spl_n_full, spl_n_red, cols = check_color_profiles(
             color_profiles=color_profiles,
             dist_profiles_outer=dist_profiles_outer,
             leaf_profiles=leaf_profiles,
@@ -325,6 +325,7 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker, distance_invert
         )
 
     else:
+        cols = []
         spl_n = []
         sm_contour = []
         final_profiles, spl_n_full, spl_n_red, = None, [], []
@@ -342,7 +343,7 @@ def spline_contours(mask_obj, mask_all, mask_leaf, img, checker, distance_invert
         for c in [sm_contour]:
             cv2.drawContours(checker, c, -1, (0, 0, 255), 1)
 
-    return final_profiles, checker, (spl_n, spl_n_full, spl_n_red), spline_points
+    return final_profiles, checker, (spl_n, spl_n_full, spl_n_red), spline_points, cols
 
 
 def get_object_watershed_labels(current_mask, markers):
@@ -443,3 +444,5 @@ def complement_mask(leaf_mask, seg, seg_lag, kpts):
         seg = seg + seg_lag_complement
 
     return seg
+
+

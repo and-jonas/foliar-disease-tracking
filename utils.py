@@ -9,6 +9,7 @@ from scipy import ndimage
 from scipy.spatial import KDTree
 from scipy.spatial import distance as dist
 from skimage.feature import peak_local_max
+from sklearn.neighbors import KernelDensity
 import skimage
 import copy
 import utils_smoothing
@@ -16,8 +17,8 @@ import pickle
 from PIL import Image
 
 
-# import matplotlib
-# import matplotlib.pyplot as plt
+import matplotlib
+import matplotlib.pyplot as plt
 # matplotlib.use('Qt5Agg')
 
 
@@ -556,19 +557,14 @@ def find_distance_matches(current, ref, c_kpt, r_kpt, rel_limit):
         c = current[i]
         r = ref[i]
         assoc = []
-        # if the current and reference have equal number of marks, match them directly
-        if len(c) == len(r):
-            assoc = [(k, k) for k in range(len(c))]
-        # if the current and reference have equal number of marks, match them directly
-        else:
-            # Compute the pairwise differences
-            pairwise_diff = np.abs(c[:, np.newaxis] - r)
-            for x, row in enumerate(pairwise_diff):
-                min_index = np.argmin(row)
-                min_value = row[min_index]
-                if min_value < rel_limit:
-                    assoc.append([min_index, x])
-                    # assoc.append([x, min_index])
+        # Compute the pairwise differences
+        pairwise_diff = np.abs(c[:, np.newaxis] - r)
+        for x, row in enumerate(pairwise_diff):
+            min_index = np.argmin(row)
+            min_value = row[min_index]
+            if min_value < rel_limit:
+                assoc.append([min_index, x])
+                # assoc.append([x, min_index])
 
         # match indices back to key point coordinates
         assocs = []
@@ -886,3 +882,174 @@ def segment_image(img, model, scale_factor):
     full = cv2.resize(full, (0, 0), fx=1/scale_factor, fy=1/scale_factor, interpolation=cv2.INTER_NEAREST)
 
     return full, overlay
+
+
+def process_leaf_mask(img, path_leaf_mask):
+
+    # read mask from leaf-toolkit
+    mask = Image.open(path_leaf_mask)
+    mask = np.asarray(mask)
+    mask = cv2.resize(mask, (0, 0), fx=0.2, fy=0.2)
+    img_rsz = cv2.resize(img, (0, 0), fx=0.2, fy=0.2)
+
+    # binarize mask
+    mask_bin = np.where(mask != 0, 255, 0)
+    mask_bin = mask_bin.astype(np.uint8)
+
+    # # Define a kernel size. Adjust based on the size of deformations.
+    # kernel = np.ones((1, 15), np.uint8)
+    #
+    # # Perform opening (erosion followed by dilation)
+    # mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_OPEN, kernel, iterations=9)
+
+    # post-process
+    mask_pp = cv2.medianBlur(mask_bin, 9)  # blur
+    mask_pp = ndimage.binary_fill_holes(mask_pp)  # fill holes
+    mask_pp = mask_pp.astype(np.uint8) * 255
+
+    # select largest object
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_pp, connectivity=8)
+    if num_labels > 1:
+        largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+        m = np.zeros_like(mask_pp)
+        m[labels == largest_label] = 255
+    else:
+        m = mask_pp.copy()
+
+    M = m.ravel()
+    M = np.expand_dims(M, -1)
+    out_mask = np.dot(M, np.array([[1, 0, 0, 0.33]]))
+    out_mask = np.reshape(out_mask, newshape=(m.shape[0], m.shape[1], 4))
+    out_mask = out_mask.astype("uint8")
+    mask = Image.fromarray(out_mask, mode="RGBA")
+    img_ = Image.fromarray(img_rsz, mode="RGB")
+    img_ = img_.convert("RGBA")
+    img_.paste(mask, (0, 0), mask)
+    overlay = np.asarray(img_)
+
+    return m, overlay
+
+
+def split_consecutive_sets(numbers):
+    sets = []
+    current_set = [numbers[0]]  # Start the first set with the first number
+
+    for i in range(1, len(numbers)):
+        if numbers[i] - numbers[i - 1] > 1:  # Check for a gap
+            sets.append(current_set)  # Save the current set
+            current_set = []  # Start a new set
+        current_set.append(numbers[i])
+
+    sets.append(current_set)  # Add the last set
+    return sets
+
+
+def get_pycn_features(mask, lesion_mask, contour, max_dist, bandwidth, kernel):
+
+    # fig, axs = plt.subplots(1, 2, sharex=True, sharey=True)
+    # axs[0].imshow(lesion_binary)
+    # axs[0].set_title('mask')
+    # axs[1].imshow(mask)
+    # axs[1].set_title('density')
+    # plt.show(block=True)
+
+    # process isolate lesions in spatial context
+    # init masks
+    pycnidia_binary = np.zeros_like(mask, dtype=np.uint8)
+    roi = np.zeros_like(mask, dtype=np.uint8)
+
+    # pycnidia coordinates
+    coords = np.where(mask == 212)
+    coords = np.array(list(zip(coords[0], coords[1])))
+    pycnidia_binary[coords[:, 0], coords[:, 1]] = 1
+
+    # isolate lesion
+    x, y, w, h = map(int, cv2.boundingRect(contour))
+    roi[y:y + h, x:x + w] = pycnidia_binary[y:y + h, x:x + w]
+    coords_l = np.where(roi == 1)
+    coords_l = np.array(list(zip(coords_l[0], coords_l[1])))
+
+    # if pycnidia present, process
+    n_pycn = len(np.where(roi == 1)[0])
+    if n_pycn == 0:
+        keys = ["frac_pycn", "mean_dist", "variance_dist", "min_dist", "max_dist", "median_dist",
+                "mean_p_density", "variance_p_density", "max_p_density", "median_p_density"]
+        return {key: np.nan for key in keys}, None
+    else:
+        # (1) DISTANCE
+        # get contour distance values
+        dmap = ndimage.distance_transform_edt(1 - roi)
+        contour_points = contour[:, 0, :]
+        dists = []
+        for point in contour_points:
+            x, y = np.round(point).astype(int)
+            if 0 <= x < dmap.shape[1] and 0 <= y < dmap.shape[0]:  # Ensure within bounds
+                dists.append(dmap[y, x])
+        dists = np.asarray(dists)
+
+        # get distance features
+        pycn_contour = np.where(dists <= max_dist)[0]
+        density_array = np.array(dists)
+        distance_features = {
+            "frac_pycn": len(pycn_contour) / len(contour),
+            "mean_dist": np.mean(density_array),
+            "variance_dist": np.var(density_array),
+            "min_dist": np.min(density_array),
+            "max_dist": np.max(density_array),
+            "median_dist": np.median(density_array)
+        }
+
+        # (2) DENSITY
+        # get kernel density estimate
+        kde = KernelDensity(bandwidth=bandwidth, kernel=kernel)
+        kde.fit(coords_l)
+
+        # resize for faster processing
+        height = int(lesion_mask.shape[0] / 5)
+        width = int(lesion_mask.shape[1] / 5)
+        x = np.linspace(0, lesion_mask.shape[1] - 1, width)  # Match resized grid
+        y = np.linspace(0, lesion_mask.shape[0] - 1, height)
+        x, y = np.meshgrid(x, y)
+        grid_coords = np.vstack([y.ravel(), x.ravel()]).T  # Note: (y, x) for consistency
+
+        # Evaluate KDE on the grid
+        log_density = kde.score_samples(grid_coords)
+        density = np.exp(log_density).reshape(height, width)
+        density_rsz = cv2.resize(density, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_NEAREST)
+        # ~ per mm^2 (assuming ~0.03 mm / px)
+        density_rsz = density_rsz * 1000
+
+        # mask everything except lesion
+        binary_mask = lesion_mask.astype(bool)
+        density_array = density_rsz[binary_mask]
+
+        # get density features
+        lesion_density_features = {
+            "mean_l_density": np.mean(density_array),
+            "variance_l_density": np.var(density_array),
+            "min_l_density": np.min(density_array),
+            "max_l_density": np.max(density_array),
+            "median_l_density": np.median(density_array)
+        }
+
+        # get a pycnidiation density contour
+        pycnidiation_mask = np.where(density_rsz >= 0.0001, 1, 0)
+        lesion_pycn_mask = np.logical_and(lesion_mask, pycnidiation_mask)
+        pycn_contour, _ = cv2.findContours(np.uint8(lesion_pycn_mask * 255), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        pycn_contour = pycn_contour[0]
+        binary_mask = lesion_pycn_mask.astype(bool)
+        density_array = density_rsz[binary_mask]
+
+        # get density features
+        pycnidiation_density_features = {
+            "mean_p_density": np.mean(density_array),
+            "variance_p_density": np.var(density_array),
+            "min_p_density": np.min(density_array),
+            "max_p_density": np.max(density_array),
+            "median_p_density": np.median(density_array)
+        }
+
+        features = distance_features | lesion_density_features | pycnidiation_density_features
+
+    return features, pycn_contour
+

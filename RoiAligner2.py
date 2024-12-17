@@ -30,14 +30,19 @@ from multiprocessing import Manager, Process
 
 class RoiAligner:
 
-    def __init__(self, path_labels, path_images, path_output, path_model, path_sample_list, n_cpus):
+    def __init__(self, path_labels, path_images, path_leaf_masks, path_output, path_model, n_cpus, path_sample_list=None):
         self.path_labels = Path(path_labels)
         self.path_images = Path(path_images)
+        self.path_leaf_masks = Path(path_leaf_masks)
         self.path_output = Path(path_output)
-        self.path_model = Path(path_model)
-        self.path_sample_list = Path(path_sample_list)
-        with open(self.path_model, 'rb') as model:
-            self.model = pickle.load(model)
+        if path_model is not None:
+            self.path_model = Path(path_model)
+        self.path_sample_list = Path(path_sample_list) if path_sample_list else None
+        if path_model is not None:
+            with open(self.path_model, 'rb') as model:
+                self.model = pickle.load(model)
+        else:
+            self.model = None
         self.n_cpus = n_cpus
 
     def prepare_workspace(self):
@@ -144,6 +149,9 @@ class RoiAligner:
             # iterate over all samples in the series
             roi_widths = []
             for j in range(len(l_series)):
+
+                if j == 8:
+                    print("stop")
 
                 try:
 
@@ -264,11 +272,16 @@ class RoiAligner:
                     kpts = l, r, t, b
 
                     # get leaf mask
-                    mask, overlay = utils.segment_image(
-                        scale_factor=0.2,
-                        img=img_crop,
-                        model=self.model
-                    )
+                    if self.model is not None:
+                        mask, overlay = utils.segment_image(
+                            scale_factor=0.2,
+                            img=img_crop,
+                            model=self.model
+                        )
+                    else:
+                        path_leaf_mask = f'{self.path_leaf_masks}/{image_id}.png'
+                        mask, overlay = utils.process_leaf_mask(img=img_cropped,
+                                                                path_leaf_mask=path_leaf_mask)
                     cv2.imwrite(f'{leaf_mask_path}/{image_id}.JPG', cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
 
                     # export a preview

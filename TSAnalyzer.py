@@ -3,10 +3,13 @@
 # Script to track developing lesions in time series of images and extract data for each lesion
 # ======================================================================================================================
 
+import os
+os.getcwd()
+
 from pathlib import Path
 import glob
 import os.path
-import utils_dpr
+import utils
 import lesion_utils
 import imageio
 import numpy as np
@@ -17,11 +20,10 @@ from scipy.spatial.distance import cdist
 from scipy import ndimage as ndi
 from multiprocessing import Manager, Process
 from matplotlib import path
-import time
 
-# import matplotlib
-# import matplotlib.pyplot as plt
-# matplotlib.use('Qt5Agg')
+import matplotlib
+import matplotlib.pyplot as plt
+matplotlib.use('Qt5Agg')
 
 
 class TSAnalyzer:
@@ -48,12 +50,13 @@ class TSAnalyzer:
         init_m_path = sample_output_path / "init_mask"
         m_checker_path = sample_output_path / "mask"
         o_checker_path = sample_output_path / "overlay"
+        pycn_density_map = sample_output_path / "pycn_density_mask"
         lesion_data_path = sample_output_path / "lesion_data"
         leaf_data_path = sample_output_path / "leaf_data"
         leaf_mask = sample_output_path / "leaf_mask"
-        for p in (m_checker_path, o_checker_path, lesion_data_path, leaf_data_path, init_m_path, leaf_mask):
+        for p in (m_checker_path, o_checker_path, lesion_data_path, leaf_data_path, init_m_path, leaf_mask, pycn_density_map):
             p.mkdir(parents=True, exist_ok=True)
-        return m_checker_path, o_checker_path, lesion_data_path, leaf_data_path, init_m_path, leaf_mask
+        return m_checker_path, o_checker_path, lesion_data_path, leaf_data_path, init_m_path, leaf_mask, pycn_density_map
 
     def get_series(self):
         """
@@ -88,7 +91,7 @@ class TSAnalyzer:
             mask_series.append(sample_masks)
             image_series.append(sample_image_names)
 
-        return mask_series[152:153], image_series[152:153]
+        return mask_series[0:1], image_series[0:1]
 
     def process_series(self, work_queue, result):
         """
@@ -134,9 +137,6 @@ class TSAnalyzer:
             for frame_number in range(1, num_frames + 1):
 
                 print("--" + str(frame_number))
-
-                if frame_number == 10:
-                    print("stop")
 
                 # get sample identifiers
                 png_name = os.path.basename(m_series[frame_number - 1])
@@ -202,7 +202,7 @@ class TSAnalyzer:
 
                 # reduce to roi delimited by the key points
                 leaf_checker = mask_leaf * leaf_mask
-                # cv2.imwrite(f'{out_paths[5]}/{png_name}', leaf_checker)
+                cv2.imwrite(f'{out_paths[5]}/{png_name}', leaf_checker)
 
                 # ==================================================================================================================
                 # 3. Watershed segmentation for object separation
@@ -258,11 +258,11 @@ class TSAnalyzer:
                                                                         lag_x:lag_x + lag_w]
 
                 # check size again
-                seg = utils.filter_objects_size(mask=seg, size_th=50, dir="smaller")
+                seg = utils.filter_objects_size(mask=seg, size_th=1000, dir="smaller")
 
                 # generate complete watershed markers
                 _, markers, _, _ = cv2.connectedComponentsWithStats(seg, connectivity=8)
-                # cv2.imwrite(f'{out_paths[4]}/{png_name}', seg)
+                cv2.imwrite(f'{out_paths[4]}/{png_name}', seg)
 
                 # ==================================================================================================================
                 # 4. Analyze each lesion: label and extract data
@@ -281,13 +281,15 @@ class TSAnalyzer:
                 lesion_data = []
 
                 # prepare distance map
-                # slow operation, therefore perform once for the entire inverted mask
                 mask_invert = np.bitwise_not(seg)
                 distance_invert = ndi.distance_transform_edt(mask_invert)
 
                 for idx, contour in enumerate(contours):
 
-                    # print("----" + str(idx))
+                    if frame_number == 11:
+                        print("stop")
+
+                    print("----" + str(idx))
 
                     # get the roi
                     x, y, w, h = map(int, cv2.boundingRect(contour))
@@ -302,7 +304,7 @@ class TSAnalyzer:
                     is_new_object = True
                     for lag_label, (lag_x, lag_y, lag_w, lag_h) in labels.items():
 
-                        # print("------" + str(lag_label))
+                        print("------" + str(lag_label))
 
                         # get the mask of the lag object in context
                         rect_lag = (lag_x, lag_y, lag_w, lag_h)
@@ -340,7 +342,7 @@ class TSAnalyzer:
                     empty_mask_all, empty_img, ctr_obj = lesion_utils.select_roi(rect=rect, img=img, mask=seg)
 
                     # extract RGB profile, checker image, spline normals, and spline base points
-                    prof, out_checker, spl, spl_points = lesion_utils.spline_contours(
+                    prof, out_checker, spl, spl_points, cols = lesion_utils.spline_contours(
                         mask_obj=roi,
                         mask_all=empty_mask_all,
                         mask_leaf=leaf_checker,
@@ -351,11 +353,24 @@ class TSAnalyzer:
 
                     # extract lesion data
                     if len(spl[0]) != 0 and in_leaf_checker != 0:
+
                         # extract perimeter lengths
                         analyzable_perimeter = len(spl[1]) / len(spl[0])
                         occluded_perimeter = len(spl[2]) / len(spl[0])
-                        # edge_perimeter = len(spl[3]) / len(spl[0])
-                        # neigh_perimeter = len(spl[2]) / len(spl[0])
+
+                        # Calculate total distance in x and y directions
+                        total_x_distance = np.sum(np.abs(np.diff(spl_points[0])))
+                        total_y_distance = np.sum(np.abs(np.diff(spl_points[1])))
+
+                        # calculate expandable distance in x and y directions
+                        remove_idx = np.unique(cols)
+                        if len(remove_idx) != 0:
+                            r_idxs = utils.split_consecutive_sets(remove_idx)
+                            dx = sum(np.sum(np.abs(np.diff(spl_points[0][i]))) for i in r_idxs)
+                            dy = sum(np.sum(np.abs(np.diff(spl_points[1][i]))) for i in r_idxs)
+                        else:
+                            dx = 0
+                            dy = 0
 
                         # extract other lesion properties
                         # these are extracted from the original (un-smoothed) contour
@@ -371,6 +386,13 @@ class TSAnalyzer:
                         n_pycn = len(np.where(pycn_mask == 212)[0])
                         pycn_density_lesion = n_pycn / contour_area
 
+                        pycn_features, pycn_contour = utils.get_pycn_features(
+                            mask=frame_,
+                            lesion_mask=roi,
+                            contour=contour,
+                            max_dist=100, bandwidth=20, kernel='gaussian'
+                        )
+
                         # collect output data
                         lesion_data.append({'label': current_label,
                                             'area': contour_area,
@@ -378,25 +400,28 @@ class TSAnalyzer:
                                             'solidity': contour_solidity,
                                             'analyzable_perimeter': analyzable_perimeter,
                                             'occluded_perimeter': occluded_perimeter,
-                                            # 'edge_perimeter': edge_perimeter,
-                                            # 'neigh_perimeter': neigh_perimeter,
+                                            'x_perimeter': total_x_distance,
+                                            'y_perimeter': total_y_distance,
+                                            'x_perimeter_n': dx,
+                                            'y_perimeter_n': dy,
                                             'max_width': w,
                                             'max_height': h,
                                             'n_pycn': n_pycn,
                                             'pycn_density': pycn_density_lesion})
                     else:
-                        lesion_data.append({'label': current_label,
-                                            'area': np.nan,
-                                            'perimeter': np.nan,
-                                            'solidity': np.nan,
-                                            'analyzable_perimeter': np.nan,
-                                            'occluded_perimeter': occluded_perimeter,
-                                            # 'edge_perimeter': np.nan,
-                                            # 'neigh_perimeter': np.nan,
-                                            'max_width': np.nan,
-                                            'max_height': np.nan,
-                                            'n_pycn': np.nan,
-                                            'pycn_density': np.nan})
+                        keys = ['area', 'perimeter', 'solidity', 'analyzable_perimeter',
+                                'occluded_perimeter', 'x_perimeter', 'y_perimeter',
+                                'x_perimeter_n', 'y_perimeter_n', 'max_width', 'max_height',
+                                'n_pycn', 'pycn_density']
+                        lesion_data.append({'label': current_label} | {key: np.nan for key in keys})
+
+                    # draw pycnidiation contour
+                    image_with_pycn = copy.copy(img)
+                    cv2.drawContours(image_with_pycn, pycn_contour, -1, (255, 255, 0), 2)
+                    cv2.drawContours(image_with_pycn, contour, -1, (0, 0, 0), 2)
+
+                    # data
+                    lesion_data.append(pycn_features)
 
                 # Update the labels with the new matches
                 labels = object_matches
@@ -409,7 +434,7 @@ class TSAnalyzer:
                 # summary stats
                 la_tot = (frame_.shape[0] * frame_.shape[1]) - len(
                     np.where(frame_ == 0)[0])  # roi area - background pixels
-                la_damaged = len(np.where((frame_ != 0) & (frame_ != 51))[0])
+                la_damaged = len(np.where((frame_ != 0) & (frame_ != 42))[0])
                 la_healthy = len(np.where(frame_ == 42)[0])
                 la_damaged_f = la_damaged / la_tot
                 la_healthy_f = la_healthy / la_tot
@@ -474,12 +499,11 @@ class TSAnalyzer:
 
                 # save lesion data
                 df = pd.DataFrame(lesion_data, columns=lesion_data[0].keys())
-                df.to_csv(f'{out_paths[2]}/{data_name}', index=False)
+                df.to_csv(f'{out_paths[2]}/test_{data_name}', index=False)
 
                 # Draw and save the labeled objects on the frame
                 frame_with_labels = cv2.cvtColor(seg, cv2.COLOR_GRAY2BGR)
                 image_with_labels = copy.copy(out_checker)
-                image_with_pycn = copy.copy(img)
                 for label, (x, y, w, h) in labels.items():
                     cv2.rectangle(frame_with_labels, (x, y), (x + w, y + h), (0, 255, 0), 2)
                     cv2.putText(frame_with_labels, str(label), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
