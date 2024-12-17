@@ -953,32 +953,23 @@ def get_pycn_features(mask, lesion_mask, contour, max_dist, bandwidth, kernel):
     # axs[1].set_title('density')
     # plt.show(block=True)
 
-    # process isolate lesions in spatial context
-    # init masks
-    pycnidia_binary = np.zeros_like(mask, dtype=np.uint8)
-    roi = np.zeros_like(mask, dtype=np.uint8)
+    # binarize pycnidia, multiply with lesion mask
+    pycnidia_binary = np.uint8(np.where(mask == 212, 1, 0) * lesion_mask / 255)
 
     # pycnidia coordinates
-    coords = np.where(mask == 212)
+    coords = np.where(pycnidia_binary == 1)
     coords = np.array(list(zip(coords[0], coords[1])))
-    pycnidia_binary[coords[:, 0], coords[:, 1]] = 1
 
-    # isolate lesion
-    x, y, w, h = map(int, cv2.boundingRect(contour))
-    roi[y:y + h, x:x + w] = pycnidia_binary[y:y + h, x:x + w]
-    coords_l = np.where(roi == 1)
-    coords_l = np.array(list(zip(coords_l[0], coords_l[1])))
-
-    # if pycnidia present, process
-    n_pycn = len(np.where(roi == 1)[0])
-    if n_pycn == 0:
+    if len(coords) == 0:
         keys = ["frac_pycn", "mean_dist", "variance_dist", "min_dist", "max_dist", "median_dist",
+                "mean_l_density", "variance_l_density", "max_l_density", "median_l_density",
                 "mean_p_density", "variance_p_density", "max_p_density", "median_p_density"]
         return {key: np.nan for key in keys}, None
     else:
+
         # (1) DISTANCE
         # get contour distance values
-        dmap = ndimage.distance_transform_edt(1 - roi)
+        dmap = ndimage.distance_transform_edt(1 - pycnidia_binary)
         contour_points = contour[:, 0, :]
         dists = []
         for point in contour_points:
@@ -1002,7 +993,7 @@ def get_pycn_features(mask, lesion_mask, contour, max_dist, bandwidth, kernel):
         # (2) DENSITY
         # get kernel density estimate
         kde = KernelDensity(bandwidth=bandwidth, kernel=kernel)
-        kde.fit(coords_l)
+        kde.fit(coords)
 
         # resize for faster processing
         height = int(lesion_mask.shape[0] / 5)

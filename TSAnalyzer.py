@@ -91,7 +91,7 @@ class TSAnalyzer:
             mask_series.append(sample_masks)
             image_series.append(sample_image_names)
 
-        return mask_series[0:1], image_series[0:1]
+        return mask_series[0:10], image_series[0:10]
 
     def process_series(self, work_queue, result):
         """
@@ -284,9 +284,12 @@ class TSAnalyzer:
                 mask_invert = np.bitwise_not(seg)
                 distance_invert = ndi.distance_transform_edt(mask_invert)
 
+                # for pycnidiation monitoring
+                image_with_pycn = copy.copy(img)
+
                 for idx, contour in enumerate(contours):
 
-                    if frame_number == 11:
+                    if frame_number == 4:
                         print("stop")
 
                     print("----" + str(idx))
@@ -416,7 +419,6 @@ class TSAnalyzer:
                         lesion_data.append({'label': current_label} | {key: np.nan for key in keys})
 
                     # draw pycnidiation contour
-                    image_with_pycn = copy.copy(img)
                     cv2.drawContours(image_with_pycn, pycn_contour, -1, (255, 255, 0), 2)
                     cv2.drawContours(image_with_pycn, contour, -1, (0, 0, 0), 2)
 
