@@ -44,6 +44,18 @@ class TSAnalyzer:
         Creates all required output directories
         """
         self.path_output.mkdir(parents=True, exist_ok=True)
+        with open(f"{self.path_output}/failed_samples.txt", 'w') as file:
+            pass
+
+    def log_fail(self, image_id):
+        """
+        Writes the image id of failure casees to a txt file
+        :param image_id: if of the current image
+        :param type: the type of transformation attempted ("piecewise" of "projective")
+        """
+        f = open(f"{self.path_output}/failed_samples.txt", 'a')
+        f.writelines(image_id + "\n")
+        f.close()
 
     def create_output_dirs(self, series_id):
         """
@@ -140,293 +152,301 @@ class TSAnalyzer:
             # Process each frame in the time series
             for frame_number in range(1, num_frames + 1):
 
-                # print("--" + str(frame_number))
+                try:
 
-                # get sample identifiers
-                png_name = os.path.basename(m_series[frame_number - 1])
-                data_name = png_name.replace(".png", ".txt")
-                sample_name = png_name.replace(".png", "")
-                txt_name = sample_name + '.txt'
+                    # print("--" + str(frame_number))
 
-                # ==================================================================================================================
-                # 1. Pre-processing
-                # ==================================================================================================================
+                    # get sample identifiers
+                    png_name = os.path.basename(m_series[frame_number - 1])
+                    data_name = png_name.replace(".png", ".txt")
+                    sample_name = png_name.replace(".png", "")
+                    txt_name = sample_name + '.txt'
 
-                # Load the multi-class segmentation mask
-                frame_ = cv2.imread(m_series[frame_number - 1], cv2.IMREAD_GRAYSCALE)
+                    # ==================================================================================================================
+                    # 1. Pre-processing
+                    # ==================================================================================================================
 
-                # get coordinates of white marks ("key points")
-                if frame_number == 1:
-                    kpts = [(0, 0), (frame_.shape[1], 0), (frame_.shape[1], frame_.shape[0]), (0, frame_.shape[0])]
-                else:
-                    kpts_fn = glob.glob(str(self.path_kpts / txt_name))[0]
-                    kpts0 = pd.read_csv(kpts_fn)
-                    kpts = utils.make_point_list(np.asarray(kpts0))
+                    # Load the multi-class segmentation mask
+                    frame_ = cv2.imread(m_series[frame_number - 1], cv2.IMREAD_GRAYSCALE)
 
-                # get leaf mask (without insect damage!)
-                mask_leaf = np.where((frame_ >= 41) & (frame_ != 153), 1, 0).astype("uint8")
-                mask_leaf = np.where(mask_leaf, 255, 0).astype("uint8")
-
-                # get lesion mask
-                frame = np.where(frame_ == 85, 255, 0).astype("uint8")
-                frame = utils.filter_objects_size(mask=frame, size_th=500, dir="smaller")
-                # fill small holes
-                kernel = np.ones((3, 3), np.uint8)
-                frame = cv2.morphologyEx(frame, cv2.MORPH_DILATE, kernel, iterations=2)
-                frame = cv2.morphologyEx(frame, cv2.MORPH_ERODE, kernel, iterations=2)
-                # remove some artifacts, e.g., around insect damage
-                frame = cv2.morphologyEx(frame, cv2.MORPH_ERODE, kernel, iterations=1)
-                frame = cv2.morphologyEx(frame, cv2.MORPH_DILATE, kernel, iterations=1)
-                # reformat
-                frame = np.where(frame, 255, 0).astype("uint8")
-
-                # ==================================================================================================================
-                # 2. Get leaf mask
-                # ==================================================================================================================
-
-                # Find the reference point (mean of x and y coordinates)
-                ref_point = np.mean(kpts, axis=0)
-
-                # Calculate polar angles and sort the points
-                sorted_points = sorted(kpts, key=lambda p: np.arctan2(p[1] - ref_point[1], p[0] - ref_point[0]))
-
-                # transform coordinates to a path
-                grid_path = path.Path(sorted_points, closed=False)
-
-                # create a mask of the image
-                xcoords = np.arange(0, frame.shape[0])
-                ycoords = np.arange(0, frame.shape[1])
-                coords = np.transpose([np.repeat(ycoords, len(xcoords)), np.tile(xcoords, len(ycoords))])
-
-                # Create mask
-                leaf_mask = grid_path.contains_points(coords, radius=-0.5)
-                leaf_mask = np.swapaxes(leaf_mask.reshape(frame.shape[1], frame.shape[0]), 0, 1)
-                leaf_mask = np.where(leaf_mask, 1, 0).astype("uint8")
-                leaf_mask = cv2.morphologyEx(leaf_mask, cv2.MORPH_DILATE, kernel, iterations=2)
-
-                # reduce to roi delimited by the key points
-                leaf_checker = mask_leaf * leaf_mask
-                cv2.imwrite(f'{out_paths[5]}/{png_name}', leaf_checker)
-
-                # ==================================================================================================================
-                # 3. Watershed segmentation for object separation
-                # ==================================================================================================================
-
-                if frame_number == 1:
-                    seg = frame
-                else:
-                    seg_lag = seg
-                    if len(np.unique(markers)) > 1:
-                        seg = lesion_utils.get_object_watershed_labels(current_mask=frame, markers=markers)
+                    # get coordinates of white marks ("key points")
+                    if frame_number == 1:
+                        kpts = [(0, 0), (frame_.shape[1], 0), (frame_.shape[1], frame_.shape[0]), (0, frame_.shape[0])]
                     else:
+                        kpts_fn = glob.glob(str(self.path_kpts / txt_name))[0]
+                        kpts0 = pd.read_csv(kpts_fn)
+                        kpts = utils.make_point_list(np.asarray(kpts0))
+
+                    # get leaf mask (without insect damage!)
+                    mask_leaf = np.where((frame_ >= 41) & (frame_ != 153), 1, 0).astype("uint8")
+                    mask_leaf = np.where(mask_leaf, 255, 0).astype("uint8")
+
+                    # get lesion mask
+                    frame = np.where(frame_ == 85, 255, 0).astype("uint8")
+                    frame = utils.filter_objects_size(mask=frame, size_th=500, dir="smaller")
+                    # fill small holes
+                    kernel = np.ones((3, 3), np.uint8)
+                    frame = cv2.morphologyEx(frame, cv2.MORPH_DILATE, kernel, iterations=2)
+                    frame = cv2.morphologyEx(frame, cv2.MORPH_ERODE, kernel, iterations=2)
+                    # remove some artifacts, e.g., around insect damage
+                    frame = cv2.morphologyEx(frame, cv2.MORPH_ERODE, kernel, iterations=1)
+                    frame = cv2.morphologyEx(frame, cv2.MORPH_DILATE, kernel, iterations=1)
+                    # reformat
+                    frame = np.where(frame, 255, 0).astype("uint8")
+
+                    # ==================================================================================================================
+                    # 2. Get leaf mask
+                    # ==================================================================================================================
+
+                    # Find the reference point (mean of x and y coordinates)
+                    ref_point = np.mean(kpts, axis=0)
+
+                    # Calculate polar angles and sort the points
+                    sorted_points = sorted(kpts, key=lambda p: np.arctan2(p[1] - ref_point[1], p[0] - ref_point[0]))
+
+                    # transform coordinates to a path
+                    grid_path = path.Path(sorted_points, closed=False)
+
+                    # create a mask of the image
+                    xcoords = np.arange(0, frame.shape[0])
+                    ycoords = np.arange(0, frame.shape[1])
+                    coords = np.transpose([np.repeat(ycoords, len(xcoords)), np.tile(xcoords, len(ycoords))])
+
+                    # Create mask
+                    leaf_mask = grid_path.contains_points(coords, radius=-0.5)
+                    leaf_mask = np.swapaxes(leaf_mask.reshape(frame.shape[1], frame.shape[0]), 0, 1)
+                    leaf_mask = np.where(leaf_mask, 1, 0).astype("uint8")
+                    leaf_mask = cv2.morphologyEx(leaf_mask, cv2.MORPH_DILATE, kernel, iterations=2)
+
+                    # reduce to roi delimited by the key points
+                    leaf_checker = mask_leaf * leaf_mask
+                    cv2.imwrite(f'{out_paths[5]}/{png_name}', leaf_checker)
+
+                    # ==================================================================================================================
+                    # 3. Watershed segmentation for object separation
+                    # ==================================================================================================================
+
+                    if frame_number == 1:
                         seg = frame
+                    else:
+                        seg_lag = seg
+                        if len(np.unique(markers)) > 1:
+                            seg = lesion_utils.get_object_watershed_labels(current_mask=frame, markers=markers)
+                        else:
+                            seg = frame
 
-                # important to avoid small water shed segments that cannot be processed
-                # this is probably because of small shifts in frames over time (imperfect alignment)
-                # removes small false positives
-                seg = utils.filter_objects_size(mask=seg, size_th=1000, dir="smaller")
+                    # important to avoid small water shed segments that cannot be processed
+                    # this is probably because of small shifts in frames over time (imperfect alignment)
+                    # removes small false positives
+                    seg = utils.filter_objects_size(mask=seg, size_th=1000, dir="smaller")
 
-                # multiply with leaf mask
-                seg = seg * leaf_mask
+                    # multiply with leaf mask
+                    seg = seg * leaf_mask
 
-                if frame_number > 2:
-                    try:
-                        seg = lesion_utils.complement_mask(leaf_mask=leaf_mask, seg_lag=seg_lag, seg=seg, kpts=kpts0)
-                    # if this fails, reset seg to seg_lag and skip the current frame
-                    except IndexError:
-                        seg = seg_lag
-                        continue
-
-                # ==================================================================================================================
-                # 3. Identify and add undetected lesions from previous frame
-                # ==================================================================================================================
-
-                # get image
-                img = cv2.imread(i_series[frame_number - 1], cv2.IMREAD_COLOR)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-                # init dict
-                object_matches = {}  # matches
-                objects = {}  # all objects
-
-                # check if there are any missing objects from the last frame in the current frame
-                # update the mask if needed
-                for lab, (lag_x, lag_y, lag_w, lag_h) in all_objects.items():
-                    out1 = seg_lag[lag_y:lag_y + lag_h, lag_x:lag_x + lag_w]
-                    out2 = seg[lag_y:lag_y + lag_h, lag_x:lag_x + lag_w]
-                    overlap = np.sum(np.bitwise_and(out1, out2)) / (255 * len(np.where(out1)[1]))
-                    # if the object cannot be retrieved in the current mask,
-                    # paste the object from the previous frame into the current one
-                    if overlap < 0.1:
-                        seg[lag_y:lag_y + lag_h, lag_x:lag_x + lag_w] = seg_lag[lag_y:lag_y + lag_h,
-                                                                        lag_x:lag_x + lag_w]
-
-                # check size again
-                seg = utils.filter_objects_size(mask=seg, size_th=1000, dir="smaller")
-
-                # generate complete watershed markers
-                _, markers, _, _ = cv2.connectedComponentsWithStats(seg, connectivity=8)
-                cv2.imwrite(f'{out_paths[4]}/{png_name}', seg)
-
-                # ==================================================================================================================
-                # 4. Analyze each lesion: label and extract data
-                # ==================================================================================================================
-
-                # find contours
-                contours, _ = cv2.findContours(seg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-
-                # if not lesions are found, the original image without overlay is saved
-                if len(contours) < 1:
-                    # imageio.imwrite(f'{out_paths[1]}/{png_name}', img)
-                    continue
-
-                # Process each detected object in the current frame
-                checker = copy.copy(img)
-                lesion_data = []
-
-                # prepare distance map
-                mask_invert = np.bitwise_not(seg)
-                distance_invert = ndi.distance_transform_edt(mask_invert)
-
-                # for pycnidiation monitoring
-                image_with_pycn = copy.copy(img)
-
-                for idx, contour in enumerate(contours):
-
-                    # print("----" + str(idx))
-
-                    # get the roi
-                    x, y, w, h = map(int, cv2.boundingRect(contour))
-                    objects[idx] = (x, y, w, h)
-                    rect = cv2.boundingRect(contour)
-                    roi = lesion_utils.select_roi_2(rect=rect, mask=seg)
-
-                    # check if is fully on the imaged leaf
-                    in_leaf_checker = np.unique(leaf_mask[np.where(roi)[0], np.where(roi)[1]])[0]
-
-                    # check if is a new object by comparing with each previously identified object
-                    is_new_object = True
-                    for lag_label, (lag_x, lag_y, lag_w, lag_h) in labels.items():
-
-                        # print("------" + str(lag_label))
-
-                        # get the mask of the lag object in context
-                        rect_lag = (lag_x, lag_y, lag_w, lag_h)
-
-                        # skip check if rectangles do not overlap
-                        if not utils.rectangles_overlap(rect, rect_lag):
+                    if frame_number > 2:
+                        try:
+                            seg = lesion_utils.complement_mask(leaf_mask=leaf_mask, seg_lag=seg_lag, seg=seg, kpts=kpts0)
+                        # if this fails, reset seg to seg_lag and skip the current frame
+                        except IndexError:
+                            seg = seg_lag
                             continue
 
-                        # if rectangles do overlap, perform more detailed check
-                        roi_lag = lesion_utils.select_roi_2(rect=rect_lag, mask=seg_lag)
+                    # ==================================================================================================================
+                    # 3. Identify and add undetected lesions from previous frame
+                    # ==================================================================================================================
 
-                        # get areas and overlap
-                        lag_area = np.sum(np.logical_and(roi_lag, roi_lag))
-                        int_area = np.sum(np.logical_and(roi, roi_lag))
-                        contour_overlap = int_area / lag_area
+                    # get image
+                    img = cv2.imread(i_series[frame_number - 1], cv2.IMREAD_COLOR)
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-                        # if overlaps, then it is not a new lesion but an already tracked one
-                        # --> add corresponding label and terminate search
-                        if contour_overlap >= 0.2:  # <==CRITICAL=======================================================
-                            is_new_object = False
-                            object_matches[lag_label] = (x, y, w, h)
-                            current_label = lag_label  # Update the label to the existing object's label
-                            break
+                    # init dict
+                    object_matches = {}  # matches
+                    objects = {}  # all objects
 
-                    # If the object is not sufficiently overlapped with any previous object, assign a new label
-                    if is_new_object:
-                        object_matches[next_label] = (x, y, w, h)
-                        current_label = next_label  # Update the label to the newly assigned label
-                        next_label += 1
+                    # check if there are any missing objects from the last frame in the current frame
+                    # update the mask if needed
+                    for lab, (lag_x, lag_y, lag_w, lag_h) in all_objects.items():
+                        out1 = seg_lag[lag_y:lag_y + lag_h, lag_x:lag_x + lag_w]
+                        out2 = seg[lag_y:lag_y + lag_h, lag_x:lag_x + lag_w]
+                        overlap = np.sum(np.bitwise_and(out1, out2)) / (255 * len(np.where(out1)[1]))
+                        # if the object cannot be retrieved in the current mask,
+                        # paste the object from the previous frame into the current one
+                        if overlap < 0.1:
+                            seg[lag_y:lag_y + lag_h, lag_x:lag_x + lag_w] = seg_lag[lag_y:lag_y + lag_h,
+                                                                            lag_x:lag_x + lag_w]
 
-                    # modify dimensions of the bounding rectangle
-                    rect = lesion_utils.get_bounding_boxes(rect=rect)
+                    # check size again
+                    seg = utils.filter_objects_size(mask=seg, size_th=1000, dir="smaller")
 
-                    # extract roi
-                    empty_mask_all, empty_img, ctr_obj = lesion_utils.select_roi(rect=rect, img=img, mask=seg)
+                    # generate complete watershed markers
+                    _, markers, _, _ = cv2.connectedComponentsWithStats(seg, connectivity=8)
+                    cv2.imwrite(f'{out_paths[4]}/{png_name}', seg)
 
-                    # extract RGB profile, checker image, spline normals, and spline base points
-                    prof, out_checker, spl, spl_points, cols = lesion_utils.spline_contours(
-                        mask_obj=roi,
-                        mask_all=empty_mask_all,
-                        mask_leaf=leaf_checker,
-                        img=empty_img,
-                        checker=checker,
-                        distance_invert=distance_invert,
-                    )
+                    # ==================================================================================================================
+                    # 4. Analyze each lesion: label and extract data
+                    # ==================================================================================================================
 
-                    # extract lesion data
-                    if len(spl[0]) != 0 and in_leaf_checker != 0:
+                    # find contours
+                    contours, _ = cv2.findContours(seg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
-                        # extract perimeter lengths
-                        analyzable_perimeter = len(spl[1]) / len(spl[0])
-                        occluded_perimeter = len(spl[2]) / len(spl[0])
+                    # if not lesions are found, the original image without overlay is saved
+                    if len(contours) < 1:
+                        # imageio.imwrite(f'{out_paths[1]}/{png_name}', img)
+                        continue
 
-                        # Calculate total distance in x and y directions
-                        total_x_distance = np.sum(np.abs(np.diff(spl_points[0])))
-                        total_y_distance = np.sum(np.abs(np.diff(spl_points[1])))
+                    # Process each detected object in the current frame
+                    checker = copy.copy(img)
+                    lesion_data = []
 
-                        # calculate expandable distance in x and y directions
-                        remove_idx = np.unique(cols)
-                        if len(remove_idx) != 0:
-                            r_idxs = utils.split_consecutive_sets(remove_idx)
-                            dx = sum(np.sum(np.abs(np.diff(spl_points[0][i]))) for i in r_idxs)
-                            dy = sum(np.sum(np.abs(np.diff(spl_points[1][i]))) for i in r_idxs)
-                        else:
-                            dx = 0
-                            dy = 0
+                    # prepare distance map
+                    mask_invert = np.bitwise_not(seg)
+                    distance_invert = ndi.distance_transform_edt(mask_invert)
 
-                        # extract other lesion properties
-                        # these are extracted from the original (un-smoothed) contour
-                        contour_area = cv2.contourArea(contour)
-                        contour_perimeter = cv2.arcLength(contour, True)
-                        hull = cv2.convexHull(contour)
-                        hull_area = cv2.contourArea(hull)
-                        contour_solidity = float(contour_area) / hull_area
-                        _, _, w, h = x, y, w, h = cv2.boundingRect(contour)
+                    # for pycnidiation monitoring
+                    image_with_pycn = copy.copy(img)
 
-                        # extract pycnidia number
-                        pycn_mask = np.where(roi, frame_, 0)
-                        n_pycn = len(np.where(pycn_mask == 212)[0])
-                        pycn_density_lesion = n_pycn / contour_area
+                    for idx, contour in enumerate(contours):
 
-                        pycn_features, pycn_contour = utils.get_pycn_features(
-                            mask=frame_,
-                            lesion_mask=roi,
-                            contour=contour,
-                            max_dist=100, bandwidth=20, kernel='gaussian'
+                        # print("----" + str(idx))
+
+                        # get the roi
+                        x, y, w, h = map(int, cv2.boundingRect(contour))
+                        objects[idx] = (x, y, w, h)
+                        rect = cv2.boundingRect(contour)
+                        roi = lesion_utils.select_roi_2(rect=rect, mask=seg)
+
+                        # check if is fully on the imaged leaf
+                        in_leaf_checker = np.unique(leaf_mask[np.where(roi)[0], np.where(roi)[1]])[0]
+
+                        # check if is a new object by comparing with each previously identified object
+                        is_new_object = True
+                        for lag_label, (lag_x, lag_y, lag_w, lag_h) in labels.items():
+
+                            # print("------" + str(lag_label))
+
+                            # get the mask of the lag object in context
+                            rect_lag = (lag_x, lag_y, lag_w, lag_h)
+
+                            # skip check if rectangles do not overlap
+                            if not utils.rectangles_overlap(rect, rect_lag):
+                                continue
+
+                            # if rectangles do overlap, perform more detailed check
+                            roi_lag = lesion_utils.select_roi_2(rect=rect_lag, mask=seg_lag)
+
+                            # get areas and overlap
+                            lag_area = np.sum(np.logical_and(roi_lag, roi_lag))
+                            int_area = np.sum(np.logical_and(roi, roi_lag))
+                            contour_overlap = int_area / lag_area
+
+                            # if overlaps, then it is not a new lesion but an already tracked one
+                            # --> add corresponding label and terminate search
+                            if contour_overlap >= 0.2:  # <==CRITICAL=======================================================
+                                is_new_object = False
+                                object_matches[lag_label] = (x, y, w, h)
+                                current_label = lag_label  # Update the label to the existing object's label
+                                break
+
+                        # If the object is not sufficiently overlapped with any previous object, assign a new label
+                        if is_new_object:
+                            object_matches[next_label] = (x, y, w, h)
+                            current_label = next_label  # Update the label to the newly assigned label
+                            next_label += 1
+
+                        # modify dimensions of the bounding rectangle
+                        rect = lesion_utils.get_bounding_boxes(rect=rect)
+
+                        # extract roi
+                        empty_mask_all, empty_img, ctr_obj = lesion_utils.select_roi(rect=rect, img=img, mask=seg)
+
+                        # extract RGB profile, checker image, spline normals, and spline base points
+                        prof, out_checker, spl, spl_points, cols = lesion_utils.spline_contours(
+                            mask_obj=roi,
+                            mask_all=empty_mask_all,
+                            mask_leaf=leaf_checker,
+                            img=empty_img,
+                            checker=checker,
+                            distance_invert=distance_invert,
                         )
 
-                        # collect output data
-                        lesion_data.append({'label': current_label,
-                                            'area': contour_area,
-                                            'perimeter': contour_perimeter,
-                                            'solidity': contour_solidity,
-                                            'analyzable_perimeter': analyzable_perimeter,
-                                            'occluded_perimeter': occluded_perimeter,
-                                            'x_perimeter': total_x_distance,
-                                            'y_perimeter': total_y_distance,
-                                            'x_perimeter_n': dx,
-                                            'y_perimeter_n': dy,
-                                            'max_width': w,
-                                            'max_height': h,
-                                            'n_pycn': n_pycn,
-                                            'pycn_density': pycn_density_lesion})
-                    else:
-                        keys = ['area', 'perimeter', 'solidity', 'analyzable_perimeter',
-                                'occluded_perimeter', 'x_perimeter', 'y_perimeter',
-                                'x_perimeter_n', 'y_perimeter_n', 'max_width', 'max_height',
-                                'n_pycn', 'pycn_density']
-                        lesion_data.append({'label': current_label} | {key: np.nan for key in keys})
+                        # extract lesion data
+                        if len(spl[0]) != 0 and in_leaf_checker != 0:
 
-                    # draw pycnidiation contour
-                    if pycn_contour is not None:
-                        for p in pycn_contour:
-                            cv2.drawContours(image_with_pycn, pycn_contour, -1, (255, 255, 0), 2)
-                    cv2.drawContours(image_with_pycn, contour, -1, (0, 0, 0), 2)
+                            # extract perimeter lengths
+                            analyzable_perimeter = len(spl[1]) / len(spl[0])
+                            occluded_perimeter = len(spl[2]) / len(spl[0])
 
-                    # data
-                    lesion_data.append(pycn_features)
+                            # Calculate total distance in x and y directions
+                            total_x_distance = np.sum(np.abs(np.diff(spl_points[0])))
+                            total_y_distance = np.sum(np.abs(np.diff(spl_points[1])))
+
+                            # calculate expandable distance in x and y directions
+                            remove_idx = np.unique(cols)
+                            if len(remove_idx) != 0:
+                                r_idxs = utils.split_consecutive_sets(remove_idx)
+                                dx = sum(np.sum(np.abs(np.diff(spl_points[0][i]))) for i in r_idxs)
+                                dy = sum(np.sum(np.abs(np.diff(spl_points[1][i]))) for i in r_idxs)
+                            else:
+                                dx = 0
+                                dy = 0
+
+                            # extract other lesion properties
+                            # these are extracted from the original (un-smoothed) contour
+                            contour_area = cv2.contourArea(contour)
+                            contour_perimeter = cv2.arcLength(contour, True)
+                            hull = cv2.convexHull(contour)
+                            hull_area = cv2.contourArea(hull)
+                            contour_solidity = float(contour_area) / hull_area
+                            _, _, w, h = x, y, w, h = cv2.boundingRect(contour)
+
+                            # extract pycnidia number
+                            pycn_mask = np.where(roi, frame_, 0)
+                            n_pycn = len(np.where(pycn_mask == 212)[0])
+                            pycn_density_lesion = n_pycn / contour_area
+
+                            pycn_features, pycn_contour = utils.get_pycn_features(
+                                mask=frame_,
+                                lesion_mask=roi,
+                                contour=contour,
+                                max_dist=100, bandwidth=20, kernel='gaussian'
+                            )
+
+                            # collect output data
+                            ldat = {'label': current_label,
+                                           'area': contour_area,
+                                           'perimeter': contour_perimeter,
+                                           'solidity': contour_solidity,
+                                           'analyzable_perimeter': analyzable_perimeter,
+                                           'occluded_perimeter': occluded_perimeter,
+                                           'x_perimeter': total_x_distance,
+                                           'y_perimeter': total_y_distance,
+                                           'x_perimeter_n': dx,
+                                           'y_perimeter_n': dy,
+                                           'max_width': w,
+                                           'max_height': h,
+                                           'n_pycn': n_pycn,
+                                           'pycn_density': pycn_density_lesion
+                                           }
+                        else:
+                            keys = ['area', 'perimeter', 'solidity', 'analyzable_perimeter',
+                                    'occluded_perimeter', 'x_perimeter', 'y_perimeter',
+                                    'x_perimeter_n', 'y_perimeter_n', 'max_width', 'max_height',
+                                    'n_pycn', 'pycn_density']
+                            ldat = ldat | {'label': current_label} | {key: np.nan for key in keys}
+
+                        # draw pycnidiation contour
+                        if pycn_contour is not None:
+                            for p in pycn_contour:
+                                cv2.drawContours(image_with_pycn, p, -1, (255, 255, 0), 2)
+                        cv2.drawContours(image_with_pycn, contour, -1, (0, 0, 0), 2)
+
+                        # data
+                        ldat = ldat | pycn_features
+                        lesion_data.append(ldat)
+
+                except:
+                    self.log_fail(sample_name)
+                    continue
 
                 # Update the labels with the new matches
                 labels = object_matches
@@ -509,7 +529,7 @@ class TSAnalyzer:
 
                 # save lesion data
                 df = pd.DataFrame(lesion_data, columns=lesion_data[0].keys())
-                df.to_csv(f'{out_paths[2]}/test_{data_name}', index=False)
+                df.to_csv(f'{out_paths[2]}/{data_name}', index=False)
 
                 # Draw and save the labeled objects on the frame
                 frame_with_labels = cv2.cvtColor(seg, cv2.COLOR_GRAY2BGR)

@@ -19,7 +19,7 @@ def run():
         path_images=path_images,
         path_kpts=path_kpts,
         path_output=path_output,
-        n_cpus=12,
+        n_cpus=20,
     )
     ts_analyzer.process_all()
 
