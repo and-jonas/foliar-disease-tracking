@@ -218,7 +218,7 @@ class RoiAligner:
                     roi_loc = {'rotation_matrix': M_img.tolist(), 'bounding_box': pts.tolist()}
 
                     # make crop to run inference on
-                    img_cropped = utils.make_inference_crop(pts, img)
+                    img_cropped = utils.crop_to_points(pts, img, patch_sz=(2048, 8192))
                     cv2.imwrite(f'{crop_path}/{image_id}.JPG', cv2.cvtColor(img_cropped, cv2.COLOR_BGR2RGB))
 
                     # draw key points and bounding box on overlay image as check

@@ -4,6 +4,11 @@
 from builtins import bin
 
 import numpy as np
+import pandas as pd
+from pathlib import Path
+import os
+import glob
+from tqdm import tqdm
 import cv2
 from scipy import ndimage
 from scipy.spatial import KDTree
@@ -15,7 +20,9 @@ import copy
 import utils_smoothing
 import pickle
 from PIL import Image
-
+import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
+import warnings
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -291,26 +298,36 @@ def make_bbox_overlay(img, pts, box):
     return overlay
 
 
-def make_inference_crop(pts, img):
+def crop_to_points(pts, img, patch_sz):
     """
     Makes a crop of the full image that contains the leaf to speed up inference
     :param pts: coordinates of the bounding box
     :param img: image to crop
     :return: cropped image
     """
+
     # get the centroid
     mw, mh = np.mean(pts, axis=0)
 
     # crop according to centroid
-    h_min = int(mh) - int(2048 / 2)
-
+    h_min = int(mh) - int(patch_sz[0] / 2)
     if h_min < 0:
         print("Bounding Box outside of the image")
-
-    if h_min + 2048 >= len(img):
+    if h_min + patch_sz[0] >= len(img):
         print("Bounding Box outside of the image")
 
-    img_cropped = img[h_min:h_min + 2048, :, :]
+    # crop width if necessary
+    if not patch_sz[1] == img.shape[1]:
+
+        # crop according to centroid
+        w_min = int(mw) - int(patch_sz[1] / 2)
+        if w_min < 0:
+            print("Bounding Box outside of the image")
+        if w_min + patch_sz[1] >= img.shape[1]:
+            print("Bounding Box outside of the image")
+        img_cropped = img[h_min:h_min + patch_sz[0], w_min:w_min+patch_sz[1], :]
+    else:
+        img_cropped = img[h_min:h_min + patch_sz[0], :, :]
 
     return img_cropped
 
@@ -962,8 +979,8 @@ def get_pycn_features(mask, lesion_mask, contour, max_dist, bandwidth, kernel):
 
     if len(coords) == 0:
         keys = ["frac_pycn", "mean_dist", "variance_dist", "min_dist", "max_dist", "median_dist",
-                "mean_l_density", "variance_l_density", "max_l_density", "median_l_density",
-                "mean_p_density", "variance_p_density", "max_p_density", "median_p_density"]
+                "mean_l_density", "variance_l_density", "min_l_density", "max_l_density", "median_l_density",
+                "mean_p_density", "variance_p_density", "min_p_density", "max_p_density", "median_p_density"]
         return {key: np.nan for key in keys}, None
     else:
 
@@ -980,15 +997,25 @@ def get_pycn_features(mask, lesion_mask, contour, max_dist, bandwidth, kernel):
 
         # get distance features
         pycn_contour = np.where(dists <= max_dist)[0]
-        density_array = np.array(dists)
+        dist_array = np.array(dists)
         distance_features = {
             "frac_pycn": len(pycn_contour) / len(contour),
-            "mean_dist": np.mean(density_array),
-            "variance_dist": np.var(density_array),
-            "min_dist": np.min(density_array),
-            "max_dist": np.max(density_array),
-            "median_dist": np.median(density_array)
+            "mean_dist": np.mean(dist_array),
+            "variance_dist": np.var(dist_array),
+            "min_dist": np.min(dist_array),
+            "max_dist": np.max(dist_array),
+            "median_dist": np.median(dist_array)
         }
+
+        # get pycnidiation area as defined by maximum distance from most nearby pycnidium
+        binary_mask = lesion_mask.astype(bool)
+        dmap_lesion = dmap * binary_mask
+        pycnidian_mask_distance_based = np.where(dmap_lesion < max_dist, 1, 0)
+        pycnidian_mask_distance_based = pycnidian_mask_distance_based * lesion_mask
+        pycn_contour_distance_based, _ = cv2.findContours(np.uint8(pycnidian_mask_distance_based * 255), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        plt.imshow(pycnidian_mask_distance_based)
+        plt.show()
 
         # (2) DENSITY
         # get kernel density estimate
@@ -1006,9 +1033,8 @@ def get_pycn_features(mask, lesion_mask, contour, max_dist, bandwidth, kernel):
         # Evaluate KDE on the grid
         log_density = kde.score_samples(grid_coords)
         density = np.exp(log_density).reshape(height, width)
+        density *= len(coords)  # Scale density by the total number of points
         density_rsz = cv2.resize(density, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_NEAREST)
-        # ~ per mm^2 (assuming ~0.03 mm / px)
-        density_rsz = density_rsz * 1000
 
         # mask everything except lesion
         binary_mask = lesion_mask.astype(bool)
@@ -1024,9 +1050,8 @@ def get_pycn_features(mask, lesion_mask, contour, max_dist, bandwidth, kernel):
         }
 
         # get a pycnidiation density contour
-        pycnidiation_mask = np.where(density_rsz >= 0.0001, 1, 0)
+        pycnidiation_mask = pycnidian_mask_distance_based
         lesion_pycn_mask = np.logical_and(lesion_mask, pycnidiation_mask)
-        pycn_contour, _ = cv2.findContours(np.uint8(lesion_pycn_mask * 255), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         binary_mask = lesion_pycn_mask.astype(bool)
         density_array = density_rsz[binary_mask]
 
@@ -1041,5 +1066,131 @@ def get_pycn_features(mask, lesion_mask, contour, max_dist, bandwidth, kernel):
 
         features = distance_features | lesion_density_features | pycnidiation_density_features
 
-    return features, pycn_contour
+    return features, pycn_contour_distance_based
 
+
+def get_pycnidia_maps(mask, resize_factor, bandwidth, kernel):
+
+    # binarize pycnidia, multiply with lesion mask
+    pycnidia_binary = np.uint8(np.where(mask == 212, 1, 0))
+
+    # get pycnidia coordinates
+    coordinates = np.where(pycnidia_binary == 1)
+    coordinates = list(zip(coordinates[0], coordinates[1]))
+
+    if not len(coordinates) > 0:
+
+        color_image_distance = np.zeros_like(mask)
+        color_image_density = np.zeros_like(mask)
+
+    else:
+
+        dmap = ndimage.distance_transform_edt(1 - pycnidia_binary)
+        # dmap = np.where(dmap > 255, 255, dmap)
+
+        # Normalize the distance map to the range [0, 1]
+        norm = Normalize(vmin=dmap.min(), vmax=dmap.max())
+        normalized_dmap = norm(dmap)
+
+        # Map the normalized distance map to a colormap
+        colormap = plt.cm.viridis  # Change to another colormap if preferred
+        color_image_distance = colormap(normalized_dmap)
+
+        # get kernel density esimate
+        kde = KernelDensity(bandwidth=bandwidth, kernel=kernel)
+        kde.fit(coordinates)
+
+        # get lesion mask
+        lesion_mask = remove_points_from_mask(mask=mask, classes=(212, 255))
+        lesion_mask = np.where(lesion_mask == 85, 1, 0)
+        lesion_mask = np.uint8(lesion_mask * 255)
+
+        # resize for faster processing
+        height = int(lesion_mask.shape[0] / resize_factor)
+        width = int(lesion_mask.shape[1] / resize_factor)
+        x = np.linspace(0, lesion_mask.shape[1] - 1, width)  # Match resized grid
+        y = np.linspace(0, lesion_mask.shape[0] - 1, height)
+        x, y = np.meshgrid(x, y)
+        grid_coords = np.vstack([y.ravel(), x.ravel()]).T  # Note: (y, x) for consistency
+
+        # Evaluate KDE on the grid
+        log_density = kde.score_samples(grid_coords)
+        density = np.exp(log_density).reshape(height, width)
+        density *= len(coordinates)  # Scale density by the total number of points
+        density_rsz = cv2.resize(density, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_NEAREST)
+        norm = Normalize(vmin=0, vmax=0.004) # max density value was 0.398 across entire data set, but different dist
+        normalized_density = norm(density_rsz)
+
+        # Map the normalized density to a colormap
+        colormap = plt.cm.plasma
+        color_image = colormap(normalized_density)
+
+        # Remove the alpha channel and scale to 0-255 for saving
+        color_image_density = (color_image[:, :, :3] * 255).astype(np.uint8)
+
+    return color_image_distance, color_image_density
+
+def make_inference_crops(pattern_imgs, pattern_coords, output_dir, img_sz, patch_sz):
+
+    files = glob.glob(f'{pattern_imgs}/*.JPG')
+    tables = glob.glob(f'{pattern_coords}/*.txt')
+
+    if  len(files) != len(tables):
+        warnings.warn("List of images and list of coordinate files are not of equal length.", UserWarning)
+
+    if not Path(output_dir).exists():
+        Path(output_dir).mkdir(exist_ok=True, parents=True)
+
+    for f in tqdm(files):
+
+        # get image
+        img = Image.open(f)
+        img = np.asarray(img)
+
+        # get corresponding coordinate table
+        img_basename = os.path.basename(f)
+        img_truncname = os.path.splitext(img_basename)[0]
+        table_fullname = [t for t in tables if img_truncname in t][0]
+
+        # get key point image coordinates from YOLO output
+        coords = pd.read_table(table_fullname, header=None, sep=" ")
+        x = coords.iloc[:, 5] * img_sz[1]
+        y = coords.iloc[:, 6] * img_sz[0]
+
+        # remove double detections
+        point_list, x, y = remove_double_detections(x=x, y=y, tol=50)
+
+        # remove outliers in the key point detections from YOLO errors
+        outliers_x = reject_outliers(x, tol=None, m=3.)  # larger extension, larger variation
+        outliers_y = reject_outliers(y, tol=None, m=2.5)  # smaller extension, smaller variation
+        outliers = outliers_x + outliers_y
+        point_list = np.delete(point_list, outliers, 0)
+
+        # get minimum area rectangle around retained key points
+        rect = cv2.minAreaRect(point_list)
+
+        # enlarge to enable feature extraction for 56 px square box around detected markers
+        (center, (w, h), angle) = rect
+        rect = (center, (w + 224, h + 224), angle)
+
+        # rotate the image about its center
+        if angle > 45:
+            angle = angle - 90
+        rows, cols = img.shape[0], img.shape[1]
+
+        # rotate the bounding box about the image's center
+        M_box = cv2.getRotationMatrix2D((cols / 2, rows / 2), angle, 1)
+        box = cv2.boxPoints(rect)
+        pts = np.intp(cv2.transform(np.array([box]), M_box))[0]
+        pts[pts < 0] = 0
+
+        # order bbox points clockwise
+        pts = order_points(pts)
+
+        # make crop to run inference on
+        img_cropped = crop_to_points(pts, img, patch_sz=(2048, 8192))
+
+        # export path
+        export_path = Path(output_dir + '/' + img_basename)
+
+        cv2.imwrite(export_path, cv2.cvtColor(img_cropped, cv2.COLOR_BGR2RGB))

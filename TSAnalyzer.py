@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 import matplotlib
 import matplotlib.pyplot as plt
-# matplotlib.use('Qt5Agg')
+matplotlib.use('Qt5Agg')
 
 # ignore numpy warnings
 np.seterr(invalid='ignore')
@@ -67,12 +67,14 @@ class TSAnalyzer:
         m_checker_path = sample_output_path / "mask"
         o_checker_path = sample_output_path / "overlay"
         pycn_density_map = sample_output_path / "pycn_density_mask"
+        pycn_distance_map = sample_output_path / "pycn_distance_mask"
         lesion_data_path = sample_output_path / "lesion_data"
         leaf_data_path = sample_output_path / "leaf_data"
         leaf_mask = sample_output_path / "leaf_mask"
-        for p in (m_checker_path, o_checker_path, lesion_data_path, leaf_data_path, init_m_path, leaf_mask, pycn_density_map):
+        for p in (m_checker_path, o_checker_path, lesion_data_path, leaf_data_path, init_m_path, leaf_mask,
+                  pycn_distance_map, pycn_density_map):
             p.mkdir(parents=True, exist_ok=True)
-        return m_checker_path, o_checker_path, lesion_data_path, leaf_data_path, init_m_path, leaf_mask, pycn_density_map
+        return m_checker_path, o_checker_path, lesion_data_path, leaf_data_path, init_m_path, leaf_mask, pycn_distance_map, pycn_density_map
 
     def get_series(self):
         """
@@ -120,22 +122,6 @@ class TSAnalyzer:
             m_series = job["mseries"]
             i_series = job["iseries"]
 
-            # PLOTS = ["ESWW0070025_3", "ESWW0070054_3", "ESWW0070060_3", "ESWW0070094_3"]
-            #
-            # def contains_plot(string):
-            #     for plot in PLOTS:
-            #         if plot in string:
-            #             return True
-            #     return False
-            #
-            # if not contains_plot(m_series[0]):
-            #     continue
-
-            # # check that there are an equal number of images and coordinate files
-            # if len(m_series) != len(i_series):
-            #     print("mask series and image series are not of equal length!")
-            #     break
-
             # generate output directories for each series
             series_id = "_".join(os.path.basename(m_series[0]).split("_")[2:4]).replace(".png", "")
 
@@ -149,7 +135,7 @@ class TSAnalyzer:
             all_objects = {}
             num_frames = len(m_series)
 
-            # Process each frame in the time series
+            # Process each frame in the time seriesr
             for frame_number in range(1, num_frames + 1):
 
                 try:
@@ -161,6 +147,8 @@ class TSAnalyzer:
                     data_name = png_name.replace(".png", ".txt")
                     sample_name = png_name.replace(".png", "")
                     txt_name = sample_name + '.txt'
+
+                    print(data_name)
 
                     # ==================================================================================================================
                     # 1. Pre-processing
@@ -305,6 +293,16 @@ class TSAnalyzer:
                     # for pycnidiation monitoring
                     image_with_pycn = copy.copy(img)
 
+                    # prepare pycnidia density map
+                    pycn_distmap, pycn_dmap = utils.get_pycnidia_maps(
+                        mask=frame_,
+                        resize_factor=5, bandwidth=25, kernel='gaussian'
+                    )
+                    plt.imsave(f'{out_paths[6]}/{png_name}', pycn_distmap)
+                    plt.imsave(f'{out_paths[7]}/{png_name}', pycn_dmap)
+
+                    # if frame_number == 11:
+                    #     print("stop")
                     for idx, contour in enumerate(contours):
 
                         # print("----" + str(idx))
@@ -341,7 +339,7 @@ class TSAnalyzer:
 
                             # if overlaps, then it is not a new lesion but an already tracked one
                             # --> add corresponding label and terminate search
-                            if contour_overlap >= 0.2:  # <==CRITICAL=======================================================
+                            if contour_overlap >= 0.2:  # <== CRITICAL =================================================
                                 is_new_object = False
                                 object_matches[lag_label] = (x, y, w, h)
                                 current_label = lag_label  # Update the label to the existing object's label
@@ -408,7 +406,7 @@ class TSAnalyzer:
                                 mask=frame_,
                                 lesion_mask=roi,
                                 contour=contour,
-                                max_dist=100, bandwidth=20, kernel='gaussian'
+                                max_dist=50, bandwidth=25, kernel='gaussian'
                             )
 
                             # collect output data
