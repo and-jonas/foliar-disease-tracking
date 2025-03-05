@@ -5,11 +5,14 @@ import argparse
 # parse arguments
 parser = argparse.ArgumentParser(description="Run tracking.")
 parser.add_argument("--experiment", type=str, required=True, help="Experiment ID")
-parser.add_argument("--indices", type=tuple, required=True, help="Series indices to process")
+parser.add_argument("--start", type=int, required=True, help="Series indices to process")
+parser.add_argument("--end", type=int, required=True, help="Series indices to process")
 parser.add_argument("--n_cpus", type=int, required=True, help="")
 args = parser.parse_args()
 experiment = args.experiment
 indices = args.indices
+start = args.start
+end = args.end
 n_cpus = args.n_cpus
 
 # variables
@@ -27,7 +30,7 @@ def run():
         path_kpts=path_kpts,
         path_output=path_out,
         n_cpus=n_cpus,
-        indices=indices
+        indices=(start, end)
     )
     ts_analyzer.process_all()
 
