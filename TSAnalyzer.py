@@ -32,12 +32,13 @@ np.seterr(invalid='ignore')
 
 class TSAnalyzer:
 
-    def __init__(self, path_aligned_masks,  path_images, path_kpts, path_output, n_cpus):
+    def __init__(self, path_aligned_masks,  path_images, path_kpts, path_output, n_cpus, indices):
         self.path_aligned_masks = Path(path_aligned_masks)
         self.path_images = Path(path_images)
         self.path_kpts = Path(path_kpts)
         self.path_output = Path(path_output)
         self.n_cpus = n_cpus
+        self.indices = indices
 
     def prepare_workspace(self):
         """
@@ -96,7 +97,7 @@ class TSAnalyzer:
         #     # warnings.warn("list of images and list of coordinate files are not of equal length."
         #     #               "Ignoring extra coordinate files.")
 
-        print("found " + str(len(uniques)) + " unique sample names")
+        print("-- found " + str(len(uniques)) + " unique sample names")
 
         for unique_sample in uniques:
             image_idx = [index for index, image_id in enumerate(image_image_id) if unique_sample == image_id]
@@ -109,7 +110,11 @@ class TSAnalyzer:
             mask_series.append(sample_masks)
             image_series.append(sample_image_names)
 
-        return mask_series, image_series
+        start, end = self.indices
+        m, i = mask_series[start:end], image_series[start:end]
+        print("-- processing " + str(len(m)) + " series")
+
+        return m, i
 
     def process_series(self, work_queue, result):
         """

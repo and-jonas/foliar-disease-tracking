@@ -1044,8 +1044,8 @@ def get_pycn_features(mask, lesion_mask, contour, max_dist, bandwidth, kernel):
         pycnidian_mask_distance_based = pycnidian_mask_distance_based * lesion_mask
         pycn_contour_distance_based, _ = cv2.findContours(np.uint8(pycnidian_mask_distance_based * 255), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
-        plt.imshow(pycnidian_mask_distance_based)
-        plt.show()
+        # plt.imshow(pycnidian_mask_distance_based)
+        # plt.show()
 
         # (2) DENSITY
         # get kernel density estimate

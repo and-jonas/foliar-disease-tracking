@@ -1,26 +1,33 @@
 
 from TSAnalyzer import TSAnalyzer
-import numpy as np
-# import os
+import argparse
 
-# workdir = 'Z:/Public/Jonas/Data/ESWW009/SingleLeaf/Output'
-workdir = "/home/anjonas/public/Public/Jonas/Data/ESWW009/SingleLeaf/Output"
-# workdir = "/home/anjonas/public/Public/Jonas/Data/ESWW009/SingleLeaf/Output"
+# parse arguments
+parser = argparse.ArgumentParser(description="Run tracking.")
+parser.add_argument("--experiment", type=str, required=True, help="Experiment ID")
+parser.add_argument("--indices", type=tuple, required=True, help="Series indices to process")
+parser.add_argument("--n_cpus", type=int, required=True, help="")
+args = parser.parse_args()
+experiment = args.experiment
+indices = args.indices
+n_cpus = args.n_cpus
+
+# variables
+workdir = f"/home/anjonas/public/Public/Jonas/Data/{experiment}/SingleLeaf/Output"
+path_out = f"/home/anjonas/public/Public/Jonas/Data/{experiment}/SingleLeaf/Output_ts"
 
 
 def run():
     path_images = f'{workdir}/*/result/piecewise'
     path_aligned_masks = f'{workdir}/*/mask_aligned/piecewise'
     path_kpts = f'{workdir}/*/keypoints'
-    # path_output = "/home/anjonas/public/Public/Jonas/011_STB_leaf_tracking/output/ts_test"
-    path_output = "/home/anjonas/public/Public/Jonas/011_STB_leaf_tracking/output/ts_ESWW009"
-    # path_output = "Z:/Public/Jonas/011_STB_leaf_tracking/output/ts_ESWW009"
     ts_analyzer = TSAnalyzer(
         path_aligned_masks=path_aligned_masks,
         path_images=path_images,
         path_kpts=path_kpts,
-        path_output=path_output,
-        n_cpus=24,
+        path_output=path_out,
+        n_cpus=n_cpus,
+        indices=indices
     )
     ts_analyzer.process_all()
 
