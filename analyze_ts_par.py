@@ -10,7 +10,6 @@ parser.add_argument("--end", type=int, required=True, help="Series indices to pr
 parser.add_argument("--n_cpus", type=int, required=True, help="")
 args = parser.parse_args()
 experiment = args.experiment
-indices = args.indices
 start = args.start
 end = args.end
 n_cpus = args.n_cpus
