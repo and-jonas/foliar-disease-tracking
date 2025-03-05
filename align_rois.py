@@ -7,14 +7,15 @@ os.getcwd()
 # workdir = '/home/anjonas/public/Public/Jonas/Data/ESWW007/SingleLeaf'
 # workdir = 'Z:/Public/Jonas/Data/ESWW009/SingleLeaf'
 workdir = "/home/anjonas/public/Public/Jonas/Data/ESWW009/SingleLeaf"
-# modeldir = 'Z:/Public/Jonas/Data/ESWW006/Images_trainset/Output/Models/rf_segmentation_v3.pkl'
-modeldir = '/home/anjonas/public/Public/Jonas/Data/ESWW006/Images_trainset/Output/Models/rf_segmentation_v3.pkl'
+# workdir = "Z:/Public/Jonas/Data/ESWW009/SingleLeaf"
+modeldir = None
+# modeldir = '/home/anjonas/public/Public/Jonas/Data/ESWW006/Images_trainset/Output/Models/rf_segmentation_v3.pkl'
 
 
 def run():
     path_labels = f'{workdir}/*/JPEG_cam/runs/pose/predict/labels'
     path_images = f'{workdir}/*/JPEG_cam'
-    path_leaf_masks = '/home/anjonas/public/Public/Jonas/011_STB_leaf_tracking/predictions'
+    path_leaf_masks = f'{workdir}/predictions'
     path_output = f'{workdir}/Output'
     path_model = modeldir
     # path_sample_list = f'{workdir}/Output/unmatched_all_orig.txt'
@@ -25,7 +26,7 @@ def run():
         path_output=path_output,
         path_model=path_model,
         # path_sample_list=path_sample_list,
-        n_cpus=1,
+        n_cpus=3,
     )
     roi_aligner.process_all()
 

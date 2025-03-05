@@ -15,6 +15,7 @@ import glob
 import os
 from pathlib import Path
 import copy
+from natsort import natsorted
 from scipy.ndimage import distance_transform_edt
 
 import matplotlib
@@ -35,15 +36,15 @@ class RoiAligner:
         self.path_images = Path(path_images)
         self.path_leaf_masks = Path(path_leaf_masks)
         self.path_output = Path(path_output)
-        if path_model is not None:
-            self.path_model = Path(path_model)
         self.path_sample_list = Path(path_sample_list) if path_sample_list else None
-        if path_model is not None:
-            with open(self.path_model, 'rb') as model:
-                self.model = pickle.load(model)
-        else:
-            self.model = None
         self.n_cpus = n_cpus
+        # if path_model is not None:
+        #     self.path_model = Path(path_model)
+        # if path_model is not None:
+        #     with open(self.path_model, 'rb') as model:
+        #         self.model = pickle.load(model)
+        # else:
+        #     self.model = None
 
     def prepare_workspace(self):
         """
@@ -73,11 +74,10 @@ class RoiAligner:
         result_proj = result_path / "projective"
         preview_path = sample_output_path / "preview"
         leaf_mask_path = sample_output_path / "leaf_mask"
-        crop_path = sample_output_path / "crop"
         if create_dirs:
-            for p in (kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path, leaf_mask_path, crop_path):
+            for p in (kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path, leaf_mask_path):
                 p.mkdir(parents=True, exist_ok=True)
-        return kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path, leaf_mask_path, crop_path
+        return kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path, leaf_mask_path
 
     def log_fail(self, image_id, type, reason):
         """
@@ -102,7 +102,7 @@ class RoiAligner:
         images = glob.glob(f'{self.path_images}/*.JPG')
         label_image_id = ["_".join(os.path.basename(l).split("_")[2:4]).replace(".txt", "") for l in labels]
         image_image_id = ["_".join(os.path.basename(l).split("_")[2:4]).replace(".JPG", "") for l in images]
-        uniques = np.unique(label_image_id)
+        uniques = natsorted(np.unique(label_image_id))
 
         if len(images) != len(labels):
             raise Exception("list of images and list of coordinate files are not of equal length.")
@@ -150,18 +150,18 @@ class RoiAligner:
             roi_widths = []
             for j in range(len(l_series)):
 
-                if j == 8:
-                    print("stop")
 
                 try:
 
                     # prepare sample work space
                     image_id = os.path.basename(l_series[j]).replace(".txt", "")
 
-                    out_paths = self.get_output_paths(label_series=l_series[j], create_dirs=True)
-                    kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path, leaf_mask_path, crop_path = out_paths
+                    # print(image_id)
+                    # if image_id == "20240625_091351_ESWW0090023_11":
+                    #     print("stop")
 
-                    print(image_id)
+                    out_paths = self.get_output_paths(label_series=l_series[j], create_dirs=True)
+                    kpts_path, overlay_path, roi_path, result_pw, result_proj, preview_path, leaf_mask_path = out_paths
 
                     # get key point coordinates from YOLO output
                     coords = pd.read_table(l_series[j], header=None, sep=" ")
@@ -173,7 +173,6 @@ class RoiAligner:
                     img = np.array(img)
 
                     # remove double detections
-                    # TODO can this be done during inference via non maximum suppression
                     point_list, x, y = utils.remove_double_detections(x=x, y=y, tol=50)
 
                     # remove outliers in the key point detections from YOLO errors
@@ -217,10 +216,6 @@ class RoiAligner:
                     # record roi localization
                     roi_loc = {'rotation_matrix': M_img.tolist(), 'bounding_box': pts.tolist()}
 
-                    # make crop to run inference on
-                    img_cropped = utils.crop_to_points(pts, img, patch_sz=(2048, 8192))
-                    cv2.imwrite(f'{crop_path}/{image_id}.JPG', cv2.cvtColor(img_cropped, cv2.COLOR_BGR2RGB))
-
                     # draw key points and bounding box on overlay image as check
                     overlay = utils.make_bbox_overlay(img, point_list, box)
                     cv2.imwrite(f'{overlay_path}/{image_id}.JPG', cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
@@ -233,13 +228,13 @@ class RoiAligner:
                     size_outliers = None
                     roi_widths.append(current_roi_width)
                     if j == 0:
-                        init_roi_height = img_crop.shape[0]
+                        init_roi_height, init_roi_width = img_crop.shape[:2]
 
                     # detect size outliers and remove from the logged bbox width values
-                    # if j != 0:
-                        # size_outliers = utils.reject_size_outliers(data=roi_widths, max_diff=200)
-                        # if size_outliers is not None:
-                        #     del roi_widths[-1]
+                    if j != 0:
+                        size_outliers = utils.reject_size_outliers(data=roi_widths, max_diff=200)
+                        if size_outliers is not None:
+                            del roi_widths[-1]
 
                     # copy image for later use
                     save_img = copy.copy(img_crop)
@@ -271,18 +266,16 @@ class RoiAligner:
                     w_ref = w if j == 0 else w_ref
                     kpts = l, r, t, b
 
-                    # get leaf mask
-                    if self.model is not None:
-                        mask, overlay = utils.segment_image(
-                            scale_factor=0.2,
-                            img=img_crop,
-                            model=self.model
-                        )
-                    else:
-                        path_leaf_mask = f'{self.path_leaf_masks}/{image_id}.png'
-                        mask, overlay = utils.process_leaf_mask(img=img_cropped,
-                                                                path_leaf_mask=path_leaf_mask)
+                    # load leaf mask to measure distance of l, r points from leaf mask
+                    path_leaf_mask = f'{self.path_leaf_masks}/{image_id}.png'
+                    mask = utils.process_leaf_mask(path_leaf_mask=path_leaf_mask)
                     cv2.imwrite(f'{leaf_mask_path}/{image_id}.JPG', cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
+                    # reconstruct full mask
+                    mw, mh = map(int, np.mean(pts, axis=0))
+                    full_mask = np.zeros((5464, 8192)).astype("uint8")
+                    full_mask[mh - 1024:mh + 1024, :] = mask
+                    mask_rot = cv2.warpAffine(full_mask, M_img, (cols, rows))  # rotate mask
+                    mask = mask_rot[pts[0][1]:pts[2][1], pts[0][0]:pts[1][0]]  # crop to roi
 
                     # export a preview
                     preview = utils.make_bbox_overlay(img=img_crop, pts=(l, r, t, b), box=None)
@@ -315,6 +308,7 @@ class RoiAligner:
                         # match key points with those on the first image of the series
                         # by searching for the closest points in the left and right marks
                         # if non is found in proximity, eliminate from both images
+
                         src2, dst2 = utils.find_distance_matches(
                             current=dist,
                             ref=dist_ref,
@@ -455,7 +449,7 @@ class RoiAligner:
                         # PROJECTIVE
                         roi_loc['transformation_matrix'] = tform_projective.params.tolist()
                         projective_warped = skimage.transform.warp(save_img, tform_projective,
-                                                                   output_shape=(init_roi_height, roi_widths[0]))
+                                                                   output_shape=(init_roi_height, init_roi_width))
                         projective_warped = skimage.util.img_as_ubyte(projective_warped)
                         cv2.imwrite(f'{result_proj}/{image_id}.JPG', cv2.cvtColor(projective_warped, cv2.COLOR_BGR2RGB))
                         # PIECEWISE
@@ -463,7 +457,7 @@ class RoiAligner:
                             pickle.dump(tform_piecewise, file)
                         file.close()
                         piecewise_warped = transform.warp(save_img, tform_piecewise,
-                                                          output_shape=(init_roi_height, roi_widths[0]))
+                                                          output_shape=(init_roi_height, init_roi_width))
                         piecewise_warped = skimage.util.img_as_ubyte(piecewise_warped)
                         cv2.imwrite(f'{result_pw}/{image_id}.JPG', cv2.cvtColor(piecewise_warped, cv2.COLOR_BGR2RGB))
 

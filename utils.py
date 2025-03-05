@@ -28,6 +28,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 # matplotlib.use('Qt5Agg')
 
+from concurrent.futures import ThreadPoolExecutor
+
 
 def make_point_list_(input):
     """
@@ -87,13 +89,16 @@ def separate_marks(pts, w_ref, reference):
     ref_l = pts_sorted_x[:8, :]
     ref_r = pts_sorted_x[-8:, :]
     left_diff = np.diff(ref_l[:, 0])
-    idx1l = np.min(np.where(left_diff < 100)[0])
-    if idx1l > 0:
-        idx2l = np.where(left_diff > 100)[0][idx1l]
+    if np.any(left_diff < 100):
+        idx1l = np.min(np.where(left_diff < 100)[0])
+        if idx1l > 0:
+            idx2l = np.where(left_diff > 100)[0][idx1l]
+        else:
+            idx2l = np.min(np.where(left_diff > 100)[0])
+        l_idx = list(range(idx1l, idx2l + 1))
+        if not len(l_idx) > 2 and not reference:
+            l_idx = []
     else:
-        idx2l = np.min(np.where(left_diff > 100)[0])
-    l_idx = list(range(idx1l, idx2l + 1))
-    if not len(l_idx) > 2 and not reference:
         l_idx = []
     right_diff = np.diff(ref_r[:, 0])
     bb = np.where(right_diff < 100)[0]
@@ -529,14 +534,11 @@ def get_leaf_edge_distances(pts, leaf_mask):
     # unpack points
     l, r = pts
 
-    # invert leaf mask
-    mask_invert = np.bitwise_not(leaf_mask)
-
     # get relative positions of left marks
     try:
         if len(l) > 0:
-            l_min_x = np.min(np.where(mask_invert[:, np.mean(l[:, 0]).astype(int)] == 255))
-            l_max_x = np.max(np.where(mask_invert[:, np.mean(l[:, 0]).astype(int)] == 255))
+            l_min_x = np.min(np.where(leaf_mask[:, np.mean(l[:, 0]).astype(int)] == 255))
+            l_max_x = np.max(np.where(leaf_mask[:, np.mean(l[:, 0]).astype(int)] == 255))
             l_dist = np.array([(l[i, 1] - l_min_x) / (l_max_x - l_min_x) for i in range(len(l))])
         else:
             l_dist = np.array([])
@@ -546,8 +548,8 @@ def get_leaf_edge_distances(pts, leaf_mask):
     # get relative positions of right marks
     try:
         if len(r) > 0:
-            r_min_x = np.min(np.where(mask_invert[:, np.mean(r[:, 0]).astype(int)] == 255))
-            r_max_x = np.max(np.where(mask_invert[:, np.mean(r[:, 0]).astype(int)] == 255))
+            r_min_x = np.min(np.where(leaf_mask[:, np.mean(r[:, 0]).astype(int)] == 255))
+            r_max_x = np.max(np.where(leaf_mask[:, np.mean(r[:, 0]).astype(int)] == 255))
             r_dist = np.array([(r[i, 1] - r_min_x) / (r_max_x - r_min_x) for i in range(len(r))])
         else:
             r_dist = np.array([])
@@ -901,23 +903,17 @@ def segment_image(img, model, scale_factor):
     return full, overlay
 
 
-def process_leaf_mask(img, path_leaf_mask):
+def process_leaf_mask0(img, path_leaf_mask):
 
     # read mask from leaf-toolkit
     mask = Image.open(path_leaf_mask)
     mask = np.asarray(mask)
-    mask = cv2.resize(mask, (0, 0), fx=0.2, fy=0.2)
-    img_rsz = cv2.resize(img, (0, 0), fx=0.2, fy=0.2)
+    mask = cv2.resize(mask, (0, 0), fx=0.25, fy=0.25)
+    img_rsz = cv2.resize(img, (0, 0), fx=0.25, fy=0.25)
 
     # binarize mask
     mask_bin = np.where(mask != 0, 255, 0)
     mask_bin = mask_bin.astype(np.uint8)
-
-    # # Define a kernel size. Adjust based on the size of deformations.
-    # kernel = np.ones((1, 15), np.uint8)
-    #
-    # # Perform opening (erosion followed by dilation)
-    # mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_OPEN, kernel, iterations=9)
 
     # post-process
     mask_pp = cv2.medianBlur(mask_bin, 9)  # blur
@@ -944,7 +940,41 @@ def process_leaf_mask(img, path_leaf_mask):
     img_.paste(mask, (0, 0), mask)
     overlay = np.asarray(img_)
 
+    # up-scale to original size
+    m = cv2.resize(m, (0, 0), fx=4, fy=4, interpolation=cv2.INTER_NEAREST)
+
     return m, overlay
+
+
+def process_leaf_mask(path_leaf_mask):
+
+    # read mask from leaf-toolkit
+    mask = Image.open(path_leaf_mask)
+    mask = np.asarray(mask)
+    mask = cv2.resize(mask, (0, 0), fx=0.25, fy=0.25)
+
+    # binarize mask
+    mask_bin = np.where(mask != 0, 255, 0)
+    mask_bin = mask_bin.astype(np.uint8)
+
+    # post-process
+    mask_pp = cv2.medianBlur(mask_bin, 9)  # blur
+    mask_pp = ndimage.binary_fill_holes(mask_pp)  # fill holes
+    mask_pp = mask_pp.astype(np.uint8) * 255
+
+    # select largest object
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_pp, connectivity=8)
+    if num_labels > 1:
+        largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+        m = np.zeros_like(mask_pp)
+        m[labels == largest_label] = 255
+    else:
+        m = mask_pp.copy()
+
+    # up-scale to original size
+    m = cv2.resize(m, (0, 0), fx=4, fy=4, interpolation=cv2.INTER_NEAREST)
+
+    return m
 
 
 def split_consecutive_sets(numbers):
@@ -1130,6 +1160,7 @@ def get_pycnidia_maps(mask, resize_factor, bandwidth, kernel):
 
     return color_image_distance, color_image_density
 
+
 def make_inference_crops(pattern_imgs, pattern_coords, output_dir, img_sz, patch_sz):
 
     files = glob.glob(f'{pattern_imgs}/*.JPG')
@@ -1188,7 +1219,7 @@ def make_inference_crops(pattern_imgs, pattern_coords, output_dir, img_sz, patch
         pts = order_points(pts)
 
         # make crop to run inference on
-        img_cropped = crop_to_points(pts, img, patch_sz=(2048, 8192))
+        img_cropped = crop_to_points(pts, img, patch_sz=patch_sz)
 
         # export path
         export_path = Path(output_dir + '/' + img_basename)

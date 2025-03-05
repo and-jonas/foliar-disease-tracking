@@ -5,7 +5,7 @@ os.chdir("Z:/Public/Jonas/Data/ESWW009/SingleLeaf")
 
 pattern_imgs = "202*/JPEG_cam"
 pattern_coords = "202*/JPEG_cam/runs/pose/predict/labels"
-output_dir = "inference_crops"
+output_dir = "inference_crops2"
 
 # make crops that maintain image width but sample only part of image in height direction
 utils.make_inference_crops(pattern_imgs=pattern_imgs,

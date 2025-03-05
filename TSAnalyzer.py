@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 import matplotlib
 import matplotlib.pyplot as plt
-matplotlib.use('Qt5Agg')
+# matplotlib.use('Qt5Agg')
 
 # ignore numpy warnings
 np.seterr(invalid='ignore')
@@ -547,12 +547,14 @@ class TSAnalyzer:
                     # Draw circles at the specified coordinates
                     for x, y in zip(p_y_coords, p_x_coords):
                         cv2.circle(image_with_pycn, (y, x), 5, (255, 0, 0), 1)
+                        cv2.circle(image_with_labels, (y, x), 5, (0, 0, 255), 1)
                 except IndexError:
                     pass
                 try:
                     r_y_coords, r_x_coords = rust_point_list[:, 1], rust_point_list[:, 0]
                     for x, y in zip(r_y_coords, r_x_coords):
                         cv2.circle(image_with_pycn, (y, x), 5, (0, 255, 0), 1)
+                        cv2.circle(image_with_labels, (y, x), 5, (0, 0, 255), 1)
                 except IndexError:
                     pass
 
