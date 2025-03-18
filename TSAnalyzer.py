@@ -408,7 +408,7 @@ class TSAnalyzer:
                             pycn_density_lesion = n_pycn / contour_area
 
                             # extract rust number
-                            rust_mask = np.where(roi, frame_, )
+                            rust_mask = np.where(roi, frame_, 0)
                             n_rust = len(np.where(rust_mask == 255)[0])
                             rust_density_lesion = n_rust / contour_area
 
