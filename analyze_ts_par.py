@@ -14,6 +14,11 @@ start = args.start
 end = args.end
 n_cpus = args.n_cpus
 
+# experiment = "ESWW007"
+# start = 0
+# end = 1
+# n_cpus = 1
+
 # variables
 workdir = f"/home/anjonas/public/Public/Jonas/Data/{experiment}/SingleLeaf/Output"
 path_out = f"/home/anjonas/public/Public/Jonas/Data/{experiment}/SingleLeaf/Output_ts"

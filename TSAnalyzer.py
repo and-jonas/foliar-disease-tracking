@@ -407,6 +407,11 @@ class TSAnalyzer:
                             n_pycn = len(np.where(pycn_mask == 212)[0])
                             pycn_density_lesion = n_pycn / contour_area
 
+                            # extract rust number
+                            rust_mask = np.where(roi, frame_, )
+                            n_rust = len(np.where(rust_mask == 255)[0])
+                            rust_density_lesion = n_rust / contour_area
+
                             pycn_features, pycn_contour = utils.get_pycn_features(
                                 mask=frame_,
                                 lesion_mask=roi,
@@ -416,25 +421,26 @@ class TSAnalyzer:
 
                             # collect output data
                             ldat = {'label': current_label,
-                                           'area': contour_area,
-                                           'perimeter': contour_perimeter,
-                                           'solidity': contour_solidity,
-                                           'analyzable_perimeter': analyzable_perimeter,
-                                           'occluded_perimeter': occluded_perimeter,
-                                           'x_perimeter': total_x_distance,
-                                           'y_perimeter': total_y_distance,
-                                           'x_perimeter_n': dx,
-                                           'y_perimeter_n': dy,
-                                           'max_width': w,
-                                           'max_height': h,
-                                           'n_pycn': n_pycn,
-                                           'pycn_density': pycn_density_lesion
-                                           }
+                                    'area': contour_area,
+                                    'perimeter': contour_perimeter,
+                                    'solidity': contour_solidity,
+                                    'analyzable_perimeter': analyzable_perimeter,
+                                    'occluded_perimeter': occluded_perimeter,
+                                    'x_perimeter': total_x_distance,
+                                    'y_perimeter': total_y_distance,
+                                    'x_perimeter_n': dx,
+                                    'y_perimeter_n': dy,
+                                    'max_width': w,
+                                    'max_height': h,
+                                    'n_pycn': n_pycn,
+                                    'pycn_density_lesion': pycn_density_lesion,
+                                    'rust_density_lesion': rust_density_lesion
+                                    }
                         else:
                             keys = ['area', 'perimeter', 'solidity', 'analyzable_perimeter',
                                     'occluded_perimeter', 'x_perimeter', 'y_perimeter',
                                     'x_perimeter_n', 'y_perimeter_n', 'max_width', 'max_height',
-                                    'n_pycn', 'pycn_density']
+                                    'n_pycn', 'pycn_density_lesion', 'rust_density_lesion']
                             ldat = ldat | {'label': current_label} | {key: np.nan for key in keys}
 
                         # draw pycnidiation contour
